@@ -23,6 +23,14 @@ export default function Nav() {
   const links = LINKS.map((l) => ({ ...l, href: to(l.id) }));
   const buyHref = to('pricing');
 
+  // Release the scroll lock synchronously: React's state update is batched, so
+  // clearing it in an effect can land after the browser's fragment jump — and
+  // a locked body silently cancels that scroll on mobile.
+  const closeAndJump = () => {
+    document.body.style.overflow = '';
+    setOpen(false);
+  };
+
   useEffect(() => {
     document.body.style.overflow = open ? 'hidden' : '';
     const onKey = (e) => e.key === 'Escape' && setOpen(false);
@@ -120,7 +128,7 @@ export default function Nav() {
             >
               <a
                 href={l.href}
-                onClick={() => setOpen(false)}
+                onClick={closeAndJump}
                 className="block py-2 font-display text-[2.6rem] leading-none text-white"
               >
                 {l.label}
@@ -130,7 +138,7 @@ export default function Nav() {
         </ul>
         <a
           href={buyHref}
-          onClick={() => setOpen(false)}
+          onClick={closeAndJump}
           className="btn btn-primary mt-12 w-max"
           style={{
             transform: open ? 'translateY(0)' : 'translateY(3rem)',

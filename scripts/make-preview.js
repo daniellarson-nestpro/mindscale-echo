@@ -72,6 +72,40 @@ const BOOTSTRAP = `
     window.addEventListener('scroll', evaluate, { passive: true });
   }
 
+  // Mobile nav. React is stripped from the preview, so the hamburger would
+  // otherwise be inert — and on a phone it's the only nav control there is.
+  var burger = document.querySelector('button[aria-label="Open menu"], button[aria-label="Close menu"]');
+  var overlay = document.querySelector('div.glass-fixed.fixed.inset-0');
+  if (burger && overlay) {
+    var bars = burger.querySelectorAll('span');
+    var items = overlay.querySelectorAll('li, a.btn');
+    var open = false;
+    var setMenu = function (next) {
+      open = next;
+      burger.setAttribute('aria-expanded', String(open));
+      burger.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+      overlay.style.opacity = open ? '1' : '0';
+      overlay.style.pointerEvents = open ? 'auto' : 'none';
+      if (bars[0]) bars[0].style.transform = open ? 'translateY(0) rotate(45deg)' : 'translateY(-3px)';
+      if (bars[1]) bars[1].style.transform = open ? 'translateY(0) rotate(-45deg)' : 'translateY(3px)';
+      items.forEach(function (el) {
+        el.style.transform = open ? 'translateY(0)' : 'translateY(3rem)';
+        el.style.opacity = open ? '1' : '0';
+      });
+      document.body.style.overflow = open ? 'hidden' : '';
+    };
+    burger.addEventListener('click', function () { setMenu(!open); });
+    overlay.querySelectorAll('a').forEach(function (a) {
+      a.addEventListener('click', function () {
+        // Clear the scroll lock before the fragment jump, or it can't scroll.
+        setMenu(false);
+      });
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && open) setMenu(false);
+    });
+  }
+
   // Scroll reveals
   document.documentElement.classList.add('js');
   var ro = new IntersectionObserver(function (entries) {
