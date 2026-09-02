@@ -1,0 +1,324 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   MINDSCALE ECHO — design system
+   Vibe archetype: Ethereal Glass (OLED black + jade/iris mesh)
+   Layout archetype: Asymmetrical Bento + Editorial Split hero
+   ============================================================ */
+
+@layer base {
+  :root {
+    --font-display: 'Bricolage Grotesque', 'Space Grotesk', Georgia, serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --shell-pad: 0.375rem;
+    --hairline: rgba(255, 255, 255, 0.09);
+    --hairline-strong: rgba(255, 255, 255, 0.16);
+    --inner-lip: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    --ambient: 0 40px 120px -40px rgba(0, 0, 0, 0.9);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 7rem;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+
+  body {
+    @apply bg-ink-950 text-white/80 font-sans antialiased;
+    background-image:
+      radial-gradient(60rem 40rem at 12% -8%, rgba(47, 211, 154, 0.16), transparent 60%),
+      radial-gradient(52rem 38rem at 92% 6%, rgba(109, 92, 246, 0.16), transparent 62%),
+      radial-gradient(70rem 50rem at 50% 118%, rgba(47, 211, 154, 0.08), transparent 60%);
+    background-attachment: fixed;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background: rgba(127, 240, 192, 0.28);
+    color: #fff;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display text-white;
+    letter-spacing: -0.035em;
+    line-height: 0.98;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgba(127, 240, 192, 0.75);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+}
+
+@layer components {
+  /* ---------- Shell / rhythm ---------- */
+  .page-shell {
+    @apply mx-auto w-full max-w-page px-5 sm:px-8 lg:px-12;
+  }
+
+  .section-pad {
+    @apply py-24 md:py-32 lg:py-40;
+  }
+
+  /* ---------- Eyebrow tag ---------- */
+  .eyebrow {
+    @apply inline-flex items-center gap-2 rounded-full px-3 py-1 font-mono text-[10px] font-medium uppercase tracking-eyebrow text-echo-mint;
+    background: rgba(127, 240, 192, 0.07);
+    box-shadow: inset 0 0 0 1px rgba(127, 240, 192, 0.2);
+  }
+
+  .eyebrow-dot::before {
+    content: '';
+    @apply block h-1 w-1 rounded-full bg-echo-mint;
+    box-shadow: 0 0 8px 1px rgba(127, 240, 192, 0.9);
+  }
+
+  /* ---------- Double-bezel (Doppelrand) ---------- */
+  .bezel {
+    padding: var(--shell-pad);
+    border-radius: 2rem;
+    background: rgba(255, 255, 255, 0.035);
+    box-shadow:
+      inset 0 0 0 1px var(--hairline),
+      var(--ambient);
+    transition: box-shadow 700ms cubic-bezier(0.32, 0.72, 0, 1),
+      transform 700ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .bezel-core {
+    border-radius: calc(2rem - var(--shell-pad));
+    background: linear-gradient(
+      168deg,
+      rgba(20, 20, 25, 0.94) 0%,
+      rgba(9, 9, 12, 0.97) 100%
+    );
+    box-shadow: var(--inner-lip), inset 0 0 0 1px rgba(255, 255, 255, 0.045);
+    height: 100%;
+  }
+
+  .bezel-lift:hover {
+    transform: translateY(-3px);
+    box-shadow:
+      inset 0 0 0 1px var(--hairline-strong),
+      0 50px 130px -40px rgba(0, 0, 0, 0.95);
+  }
+
+  .bezel-accent {
+    background: linear-gradient(
+      140deg,
+      rgba(127, 240, 192, 0.22) 0%,
+      rgba(109, 92, 246, 0.14) 55%,
+      rgba(255, 255, 255, 0.03) 100%
+    );
+  }
+
+  /* ---------- Buttons: island pill + nested icon ---------- */
+  .btn {
+    @apply relative inline-flex items-center gap-3 rounded-full font-medium;
+    padding: 0.6rem 0.6rem 0.6rem 1.5rem;
+    font-size: 0.95rem;
+    letter-spacing: -0.01em;
+    transition: transform 550ms cubic-bezier(0.32, 0.72, 0, 1),
+      box-shadow 550ms cubic-bezier(0.32, 0.72, 0, 1),
+      background-color 550ms cubic-bezier(0.32, 0.72, 0, 1);
+    will-change: transform;
+  }
+
+  .btn:active {
+    transform: scale(0.975);
+  }
+
+  .btn-primary {
+    @apply text-ink-950;
+    background: linear-gradient(180deg, #b9ffe0 0%, #7ff0c0 48%, #45d7a3 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.65),
+      0 18px 46px -16px rgba(47, 211, 154, 0.65);
+  }
+
+  .btn-primary:hover {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.8),
+      0 26px 60px -18px rgba(47, 211, 154, 0.8);
+  }
+
+  .btn-ghost {
+    @apply text-white;
+    background: rgba(255, 255, 255, 0.05);
+    box-shadow: inset 0 0 0 1px var(--hairline), var(--inner-lip);
+  }
+
+  .btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.09);
+    box-shadow: inset 0 0 0 1px var(--hairline-strong), var(--inner-lip);
+  }
+
+  .btn-nib {
+    @apply flex h-8 w-8 shrink-0 items-center justify-center rounded-full;
+    transition: transform 550ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .btn-primary .btn-nib {
+    background: rgba(5, 5, 6, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(5, 5, 6, 0.14);
+  }
+
+  .btn-ghost .btn-nib {
+    background: rgba(255, 255, 255, 0.09);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  }
+
+  .btn:hover .btn-nib {
+    transform: translate3d(3px, -1px, 0) scale(1.06);
+  }
+
+  .btn[disabled] {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+
+  /* ---------- Pills / badges ---------- */
+  .logo-pill {
+    @apply inline-flex items-center justify-center rounded-full px-5 py-3 text-center text-[0.78rem] font-medium uppercase tracking-[0.12em] text-white/55;
+    background: rgba(255, 255, 255, 0.028);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+    transition: color 600ms cubic-bezier(0.32, 0.72, 0, 1),
+      box-shadow 600ms cubic-bezier(0.32, 0.72, 0, 1),
+      transform 600ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .logo-pill:hover {
+    color: rgba(255, 255, 255, 0.95);
+    transform: translateY(-2px);
+    box-shadow: inset 0 0 0 1px rgba(127, 240, 192, 0.34);
+  }
+
+  .logo-pill-ai:hover {
+    box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.42);
+  }
+
+  .rule {
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.13),
+      transparent
+    );
+  }
+
+  /* ---------- Form fields ---------- */
+  .field-label {
+    @apply mb-2 block font-mono text-[10px] uppercase tracking-eyebrow text-white/45;
+  }
+
+  .field {
+    @apply w-full rounded-2xl bg-transparent px-4 py-3 text-[0.95rem] text-white placeholder:text-white/25;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+    background-color: rgba(255, 255, 255, 0.022);
+    transition: box-shadow 500ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .field:focus {
+    outline: none;
+    box-shadow:
+      inset 0 0 0 1px rgba(127, 240, 192, 0.5),
+      0 0 0 4px rgba(127, 240, 192, 0.08);
+  }
+
+  select.field {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='rgba(255,255,255,0.4)' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1.1rem center;
+    padding-right: 2.6rem;
+  }
+
+  select.field option {
+    background: #0e0e12;
+    color: #fff;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(96deg, #ffffff 8%, #cfe9dd 42%, #9db4ff 96%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .text-gradient-mint {
+    background: linear-gradient(96deg, #7ff0c0 0%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .glass-fixed {
+    backdrop-filter: blur(22px) saturate(140%);
+    -webkit-backdrop-filter: blur(22px) saturate(140%);
+  }
+
+  /* Scroll reveal — progressive enhancement.
+     Hidden only once JS confirms it can animate them back in. */
+  .js .reveal {
+    opacity: 0;
+    transform: translate3d(0, 3rem, 0);
+    filter: blur(6px);
+    transition:
+      opacity 900ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 900ms cubic-bezier(0.16, 1, 0.3, 1),
+      filter 900ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition-delay: var(--reveal-delay, 0ms);
+    will-change: transform, opacity;
+  }
+
+  .js .reveal.is-visible {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    filter: blur(0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .js .reveal {
+      opacity: 1;
+      transform: none;
+      filter: none;
+    }
+  }
+
+  .grain {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    pointer-events: none;
+    opacity: 0.035;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+}
