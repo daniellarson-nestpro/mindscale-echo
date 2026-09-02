@@ -26,9 +26,13 @@ CREATE TABLE IF NOT EXISTS orders (
   logo_type TEXT,
   logo_size INTEGER,
   brief_submitted_at TIMESTAMPTZ,
+  confirmation_email_sent_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Existing databases: CREATE TABLE IF NOT EXISTS will not add new columns.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmation_email_sent_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS orders_email_idx ON orders (email);
 

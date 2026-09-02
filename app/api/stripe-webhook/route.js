@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getStripe } from '../../../lib/stripe';
-import { upsertOrderFromCheckoutSession } from '../../../lib/orders';
+import { notifyPaidOrder, upsertOrderFromCheckoutSession } from '../../../lib/orders';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,16 +35,19 @@ export async function POST(request) {
     return NextResponse.json({ received: true });
   }
 
+  let order = null;
   try {
     const sessionId = event.data?.object?.id;
     const session = sessionId
       ? await stripe.checkout.sessions.retrieve(sessionId)
       : event.data?.object;
-    await upsertOrderFromCheckoutSession(session);
+    order = await upsertOrderFromCheckoutSession(session);
   } catch (err) {
     console.error('[stripe-webhook] persist failed:', err?.message);
     return NextResponse.json({ error: 'Could not persist order.' }, { status: 500 });
   }
 
+  // Email failures are logged inside notifyPaidOrder and must not 500 the webhook.
+  await notifyPaidOrder(order);
   return NextResponse.json({ received: true });
 }

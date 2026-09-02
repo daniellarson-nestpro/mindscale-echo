@@ -7,7 +7,8 @@ that turns existing local coverage into a professionally written press release a
 it across traditional media and, on Premium, AI discovery channels.
 
 Built with Next.js 14 (App Router), React 18, Tailwind CSS 3, the Stripe Node SDK,
-Vercel Postgres (Neon), signed magic-link sessions, and Resend for login email.
+Vercel Postgres (Neon), signed magic-link sessions, and Resend for purchase
+confirmation and login email.
 
 ---
 
@@ -76,8 +77,8 @@ customer account UI and does not show live outlet counts.
 | 1    | Visitor clicks **Buy Basic** / **Buy Premium** on `/#pricing`                                           |
 | 2    | `POST /api/checkout` creates a Checkout Session (and a Stripe Customer) and returns its URL            |
 | 3    | Browser redirects to Stripe Checkout                                                                   |
-| 4    | Stripe fires `checkout.session.completed` → `POST /api/stripe-webhook` upserts the order               |
-| 5    | Success URL `/success?session_id=...&plan=...` verifies the session (fast path), upserts, signs in     |
+| 4    | Stripe fires `checkout.session.completed` → `POST /api/stripe-webhook` upserts the order and sends a purchase-confirmation email (not a magic link) |
+| 5    | Success URL `/success?session_id=...&plan=...` verifies the session (fast path), upserts, sends the same confirmation if the webhook has not, signs in |
 | 6    | Buyer lands on `/account?welcome=1` with their paid Basic/Premium release                              |
 | 7    | If the brief is not in yet, they submit the same onboarding fields from the workspace                  |
 | 8    | Later visits: header **Log in** → magic link to the same email → `/account`                            |
@@ -90,6 +91,68 @@ Auth never lists another customer’s orders — queries are scoped to the signe
 
 ---
 
+## Purchase confirmation email
+
+After a Checkout Session is **paid**, Mindscale Echo sends one confirmation via Resend
+to the Stripe-collected customer email (`customer_details.email` / `customer_email` on
+the session — the same address stored on the order). Stripe’s own `receipt_email` may
+be null in test; this product email does not depend on it.
+
+**When it sends**
+
+- `POST /api/stripe-webhook` for `checkout.session.completed` and
+  `checkout.session.async_payment_succeeded` (after a successful order upsert)
+- `/success` fast path and `/api/auth/claim` (same upsert, then notify)
+
+Only `payment_status === 'paid'` triggers a send. Unpaid / processing sessions wait.
+
+**Idempotency**
+
+`orders.confirmation_email_sent_at` is set in the same UPDATE that claims the send
+(`WHERE confirmation_email_sent_at IS NULL`). Webhook and `/success` can both run;
+only one email goes out. If Resend fails, the flag is cleared so the other path can
+retry. Failures are logged and never fail the webhook (HTTP 200 after a successful
+upsert).
+
+**What it is not**
+
+This is not a login email. It does not include a one-time magic-link token and does
+not expire. Workspace access stays on `/login`.
+
+**Copy (sample — Premium, brief not submitted)**
+
+```
+Subject: Your Mindscale Echo Premium payment succeeded
+
+Payment succeeded for your Mindscale Echo Premium package ($699.00).
+
+Open your workspace:
+https://mindscale-echo.vercel.app/account
+
+You can log in later with this same email (hello@mindscalepartners.com). Use Log in
+on the site — we will send a one-time link. This confirmation does not expire.
+
+Your brief is not in yet. Please submit it from your workspace so we can start the
+draft.
+
+— Mindscale Echo
+```
+
+If the brief is already on the order when the email sends, the last paragraph is:
+
+```
+We received your brief. A draft will come for your approval before distribution.
+```
+
+The workspace link is `NEXT_PUBLIC_SITE_URL/account`, then `VERCEL_URL`, then
+`https://mindscale-echo.vercel.app/account`. Implementation: `purchaseConfirmationCopy`
+and `sendPurchaseConfirmationEmail` in `lib/email.js`; `notifyPaidOrder` in
+`lib/orders.js`.
+
+No extra env vars. Reuses `RESEND_API_KEY` and `EMAIL_FROM`.
+
+---
+
 ## Environment variables
 
 | Variable                 | Required | Purpose                                                                 |
@@ -97,12 +160,12 @@ Auth never lists another customer’s orders — queries are scoped to the signe
 | `STRIPE_SECRET_KEY`      | Yes      | Server-side Stripe API key. Never exposed to the client.                 |
 | `STRIPE_PRICE_BASIC`     | Yes      | Price ID for the $499 Basic package.                                     |
 | `STRIPE_PRICE_PREMIUM`   | Yes      | Price ID for the $699 Premium package.                                   |
-| `NEXT_PUBLIC_SITE_URL`   | Yes (prod) | Absolute origin for Stripe return URLs and magic-link emails. Never taken from `Host` / `X-Forwarded-Host`. On Vercel, `VERCEL_URL` is used if this is unset. |
+| `NEXT_PUBLIC_SITE_URL`   | Yes (prod) | Absolute origin for Stripe return URLs, purchase-confirmation links, and magic-link emails. Never taken from `Host` / `X-Forwarded-Host`. On Vercel, `VERCEL_URL` is used if this is unset. |
 | `STRIPE_WEBHOOK_SECRET`  | Yes (prod) | Signing secret for `POST /api/stripe-webhook`.                         |
 | `POSTGRES_URL`           | Yes (workspace) | Neon / Vercel Postgres connection string. `DATABASE_URL` also works. |
 | `AUTH_SECRET`            | Yes (workspace) | HMAC secret for the httpOnly session cookie.                         |
-| `RESEND_API_KEY`         | Yes (prod login) | Resend API key for magic-link email.                                |
-| `EMAIL_FROM`             | Yes (prod login) | Verified from-address, e.g. `Mindscale Echo <hello@domain.com>`.    |
+| `RESEND_API_KEY`         | Yes (prod email) | Resend API key for purchase confirmation and magic-link email.      |
+| `EMAIL_FROM`             | Yes (prod email) | Verified from-address, e.g. `Mindscale Echo <hello@domain.com>`.    |
 | `ONBOARDING_WEBHOOK_URL` | Optional | Extra JSON POST of every saved brief (Zapier / Make / etc.).           |
 
 No secret is ever hardcoded, and `.env` / `.env.local` are gitignored.
@@ -129,12 +192,13 @@ openssl rand -base64 32
 
 Set the result as `AUTH_SECRET`. Use a different value in Preview vs Production if you like.
 
-**3. Resend (magic-link email)**
+**3. Resend (purchase confirmation + magic-link email)**
 
 1. Create a [Resend](https://resend.com) account and API key.
 2. Verify the sending domain (or, for a first test only, use Resend’s onboarding sender
    and send only to the account’s own email).
-3. Set `RESEND_API_KEY` and `EMAIL_FROM`.
+3. Set `RESEND_API_KEY` and `EMAIL_FROM`. Paid checkouts then get a confirmation
+   email; **Log in** still sends a separate, expiring magic link.
 
 **Local / PR mail trap:** in non-production, `POST /api/auth/login` still returns
 `devLoginUrl` in the JSON (and logs it). The login screen shows that link so you can
@@ -194,7 +258,7 @@ app/
   account/page.jsx           Logged-in workspace (real orders only)
   api/checkout/route.js      Creates the Stripe Checkout Session + Customer
   api/onboarding/route.js    Saves the brief onto the order
-  api/stripe-webhook/route.js  checkout.session.completed → persist order
+  api/stripe-webhook/route.js  checkout.session.completed → persist order + confirmation email
   api/auth/login/route.js    Issue magic link
   api/auth/callback/route.js Consume magic link, set cookie
   api/auth/claim/route.js    Sign in from a verified Checkout session_id
@@ -215,9 +279,9 @@ lib/
   plans.js                   Package catalogue + price ID resolution
   stripe.js                  Lazy Stripe client + origin resolution
   db.js                      Neon client + schema ensure
-  orders.js                  Idempotent order upsert + brief attach
+  orders.js                  Idempotent order upsert + brief attach + confirmation send
   auth.js                    Signed cookie session + magic-link tokens
-  email.js                   Resend magic-link sender
+  email.js                   Resend: purchase confirmation + magic-link sender
   release-status.js          Paid / Brief received vs placeholder steps
 sql/
   schema.sql                 orders + magic_links
@@ -242,11 +306,14 @@ This repo has no test runner. After env vars are set:
    even if you skip `/success` (webhook path) — or because you did land on `/success` (fast path).
 5. You should be signed in on `/account?welcome=1` seeing **your** package, paid status, amount,
    and date — not the homepage mock dashboard or invented outlet counts.
-6. Submit the brief from `/account`. Reload: status is **Brief received** and the saved fields show.
-7. Log out. Request a magic link with the same email. Open the Resend email, or in development
+6. Check the inbox for the Stripe-collected email: one purchase confirmation (package, amount,
+   workspace link). It must not contain a magic-link token. `confirmation_email_sent_at` should
+   be set on the order. Reloading `/success` or a second webhook must not send another copy.
+7. Submit the brief from `/account`. Reload: status is **Brief received** and the saved fields show.
+8. Log out. Request a magic link with the same email. Open the Resend email, or in development
    click **Open the login link** (`devLoginUrl`). You land in the same workspace.
-8. Request a link with a different email: you must not see the first customer’s order.
-9. Confirm `/#dashboard` on the marketing site is unchanged as a preview.
+9. Request a link with a different email: you must not see the first customer’s order.
+10. Confirm `/#dashboard` on the marketing site is unchanged as a preview.
 
 ---
 

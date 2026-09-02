@@ -8,7 +8,7 @@ import {
   safeRelativePath,
   sessionCookieOptions,
 } from '../../../../lib/auth';
-import { upsertOrderFromCheckoutSession } from '../../../../lib/orders';
+import { notifyPaidOrder, upsertOrderFromCheckoutSession } from '../../../../lib/orders';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,11 +36,13 @@ export async function GET(request) {
   const email = normalizeEmail(session.customer_details?.email || session.customer_email);
   if (!email) return fail(`/success?session_id=${encodeURIComponent(sessionId)}`);
 
+  let order = null;
   try {
-    await upsertOrderFromCheckoutSession(session);
+    order = await upsertOrderFromCheckoutSession(session);
   } catch (err) {
     console.error('[auth/claim] persist failed:', err?.message);
   }
+  await notifyPaidOrder(order);
 
   if (session.payment_status !== 'paid' || !getAuthSecret()) {
     const plan = session.metadata?.plan || '';
