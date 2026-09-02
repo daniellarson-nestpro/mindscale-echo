@@ -97,7 +97,7 @@ Auth never lists another customer’s orders — queries are scoped to the signe
 | `STRIPE_SECRET_KEY`      | Yes      | Server-side Stripe API key. Never exposed to the client.                 |
 | `STRIPE_PRICE_BASIC`     | Yes      | Price ID for the $499 Basic package.                                     |
 | `STRIPE_PRICE_PREMIUM`   | Yes      | Price ID for the $699 Premium package.                                   |
-| `NEXT_PUBLIC_SITE_URL`   | Recommended | Absolute origin for Stripe return URLs and magic-link URLs.           |
+| `NEXT_PUBLIC_SITE_URL`   | Yes (prod) | Absolute origin for Stripe return URLs and magic-link emails. Never taken from `Host` / `X-Forwarded-Host`. On Vercel, `VERCEL_URL` is used if this is unset. |
 | `STRIPE_WEBHOOK_SECRET`  | Yes (prod) | Signing secret for `POST /api/stripe-webhook`.                         |
 | `POSTGRES_URL`           | Yes (workspace) | Neon / Vercel Postgres connection string. `DATABASE_URL` also works. |
 | `AUTH_SECRET`            | Yes (workspace) | HMAC secret for the httpOnly session cookie.                         |

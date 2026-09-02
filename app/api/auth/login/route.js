@@ -38,6 +38,15 @@ export async function POST(request) {
   if (last && Date.now() - last < COOLDOWN_MS) {
     return NextResponse.json(GENERIC_OK);
   }
+
+  const origin = siteOrigin(request);
+  if (!origin || !buildLoginUrl(origin, 'probe')) {
+    return NextResponse.json(
+      { error: 'Sign-in is not available yet. Please try again shortly.' },
+      { status: 503 }
+    );
+  }
+
   cooldown.set(email, Date.now());
 
   const issued = await issueMagicLink(email);
@@ -48,7 +57,14 @@ export async function POST(request) {
     );
   }
 
-  const loginUrl = buildLoginUrl(siteOrigin(request), issued.token);
+  const loginUrl = buildLoginUrl(origin, issued.token);
+  if (!loginUrl) {
+    return NextResponse.json(
+      { error: 'Sign-in is not available yet. Please try again shortly.' },
+      { status: 503 }
+    );
+  }
+
   const mail = await sendMagicLinkEmail({ to: email, loginUrl });
 
   if (!mail.sent) {
