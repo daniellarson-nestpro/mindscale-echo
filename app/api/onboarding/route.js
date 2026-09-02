@@ -1,4 +1,7 @@
 import { NextResponse } from 'next/server';
+import { getSession, normalizeEmail } from '../../../lib/auth';
+import { getStripe } from '../../../lib/stripe';
+import { attachBrief } from '../../../lib/orders';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -6,11 +9,26 @@ export const dynamic = 'force-dynamic';
 const REQUIRED = ['companyName', 'contactName', 'contactEmail', 'announcementType'];
 const MAX_LOGO_BYTES = 5 * 1024 * 1024;
 
+async function actorEmailFromRequest(sessionId) {
+  const session = getSession();
+  if (session?.email) return session.email;
+
+  if (!sessionId) return null;
+  const stripe = getStripe();
+  if (!stripe) return null;
+  try {
+    const checkout = await stripe.checkout.sessions.retrieve(sessionId);
+    const email = normalizeEmail(checkout.customer_details?.email || checkout.customer_email);
+    if (checkout.payment_status === 'paid' && email) return email;
+  } catch (err) {
+    console.error('[onboarding] could not retrieve checkout session:', err?.message);
+  }
+  return null;
+}
+
 /**
- * Receives the post-checkout onboarding brief.
- *
- * Persistence is intentionally pluggable — see the HOOK markers below to wire
- * this to email (Resend/Postmark), a CRM, a sheet, or your database.
+ * Receives the post-checkout onboarding brief, stores it on the paid order,
+ * and optionally POSTs to ONBOARDING_WEBHOOK_URL if that variable is set.
  */
 export async function POST(request) {
   let form;
@@ -27,6 +45,7 @@ export async function POST(request) {
 
   const payload = {
     sessionId: value('sessionId'),
+    orderId: value('orderId'),
     plan: value('plan'),
     companyName: value('companyName'),
     website: value('website'),
@@ -52,6 +71,14 @@ export async function POST(request) {
     return NextResponse.json({ error: 'Please provide a valid contact email.' }, { status: 400 });
   }
 
+  const actorEmail = await actorEmailFromRequest(payload.sessionId);
+  if (!actorEmail) {
+    return NextResponse.json(
+      { error: 'Please log in or return from checkout before submitting a brief.' },
+      { status: 401 }
+    );
+  }
+
   const logo = form.get('logo');
   let logoMeta = null;
   if (logo && typeof logo === 'object' && 'size' in logo && logo.size > 0) {
@@ -60,25 +87,67 @@ export async function POST(request) {
     }
     logoMeta = { name: logo.name, type: logo.type, size: logo.size };
     // HOOK (storage): upload `await logo.arrayBuffer()` to S3 / R2 / Supabase
-    // Storage and UploadThing, then persist the resulting URL alongside payload.
+    // Storage or UploadThing, then persist the resulting URL alongside the order.
   }
 
-  // HOOK (delivery): forward the brief to your intake system.
+  const saved = await attachBrief({
+    actorEmail,
+    orderId: payload.orderId,
+    sessionId: payload.sessionId,
+    brief: payload,
+    logoMeta,
+  });
+
+  if (saved.error === 'database') {
+    return NextResponse.json(
+      { error: 'Could not save the brief just now. Please try again shortly.' },
+      { status: 503 }
+    );
+  }
+  if (saved.error === 'not_found') {
+    return NextResponse.json(
+      { error: 'We could not find a paid release for this checkout. Try logging in with your receipt email.' },
+      { status: 404 }
+    );
+  }
+  if (saved.error === 'already_submitted') {
+    return NextResponse.json(
+      {
+        error:
+          'This release already has a brief. Email hello@mindscalepartners.com if you need to change it.',
+      },
+      { status: 409 }
+    );
+  }
+  if (saved.error) {
+    return NextResponse.json({ error: 'Could not save the brief.' }, { status: 400 });
+  }
+
   const webhook = process.env.ONBOARDING_WEBHOOK_URL;
   if (webhook) {
     try {
       await fetch(webhook, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payload, logo: logoMeta }),
+        body: JSON.stringify({
+          ...payload,
+          orderId: saved.order?.id || payload.orderId,
+          logo: logoMeta,
+        }),
       });
     } catch (err) {
       console.error('[onboarding] webhook delivery failed:', err?.message);
-      // Non-fatal: the customer still gets confirmation, the brief is logged.
+      // Non-fatal: the brief is already stored on the order.
     }
   }
 
-  console.log('[onboarding] brief received', { ...payload, logo: logoMeta });
+  console.log('[onboarding] brief received', {
+    orderId: saved.order?.id,
+    sessionId: payload.sessionId,
+    plan: payload.plan,
+    contactEmail: payload.contactEmail,
+    logo: logoMeta,
+  });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, orderId: saved.order?.id });
 }
