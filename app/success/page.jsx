@@ -12,6 +12,43 @@ export const metadata = {
   robots: { index: false, follow: false },
 };
 
+function ProgressDots() {
+  const steps = [
+    { label: 'Pay', done: true },
+    { label: 'Brief', done: false, current: true },
+    { label: 'Approve', done: false },
+  ];
+  return (
+    <ol className="flex items-center justify-center gap-3">
+      {steps.map((s, i) => (
+        <li key={s.label} className="flex items-center gap-3">
+          <span className="flex items-center gap-2">
+            <span
+              className="block h-1.5 w-1.5 rounded-full"
+              style={{
+                background: s.done
+                  ? '#7ff0c0'
+                  : s.current
+                    ? 'rgba(127,240,192,0.55)'
+                    : 'rgba(255,255,255,0.16)',
+                boxShadow: s.current ? '0 0 8px 1px rgba(127,240,192,0.7)' : 'none',
+              }}
+            />
+            <span
+              className={`font-mono text-[10px] uppercase tracking-eyebrow ${
+                s.done || s.current ? 'text-white/60' : 'text-white/25'
+              }`}
+            >
+              {s.label}
+            </span>
+          </span>
+          {i < steps.length - 1 && <span className="h-px w-6 bg-white/12" />}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 async function loadSession(sessionId) {
   const stripe = getStripe();
   if (!stripe || !sessionId) return null;
@@ -39,8 +76,9 @@ export default async function SuccessPage({ searchParams }) {
         <div className="page-shell">
           <div className="mx-auto max-w-3xl">
             <header className="text-center">
-              <span className="eyebrow eyebrow-dot">
-                {paid === false ? 'Payment processing' : 'Step 2 of 2'}
+              <ProgressDots />
+              <span className="eyebrow eyebrow-dot mt-6 inline-flex">
+                {paid === false ? 'Payment processing' : 'Step 2 — your brief'}
               </span>
               <h1 className="mt-7 text-[2.6rem] leading-[0.98] sm:text-[3.6rem]">
                 <span className="text-gradient">Payment confirmed.</span>
@@ -50,6 +88,9 @@ export default async function SuccessPage({ searchParams }) {
               <p className="mx-auto mt-6 max-w-xl text-[1rem] leading-relaxed text-white/55">
                 Send us your local article and company details. We’ll draft the release and send
                 it back for your approval before anything is distributed.
+              </p>
+              <p className="mt-4 font-mono text-[10px] uppercase tracking-eyebrow text-echo-mint">
+                Draft back to you within 2 business days
               </p>
 
               <div className="mt-8 flex flex-wrap items-center justify-center gap-2.5">

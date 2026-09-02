@@ -4,10 +4,10 @@ import { useEffect, useState } from 'react';
 import { ArrowUpRight } from './Icons';
 
 const LINKS = [
+  { href: '/#reach', label: 'Reach' },
+  { href: '/#trophy', label: 'Example' },
   { href: '/#how-it-works', label: 'How it works' },
-  { href: '/#distribution', label: 'Distribution' },
   { href: '/#pricing', label: 'Pricing' },
-  { href: '/#dashboard', label: 'Dashboard' },
   { href: '/#faq', label: 'FAQ' },
 ];
 
@@ -57,7 +57,7 @@ export default function Nav() {
 
           <div className="flex items-center gap-2">
             <a href="/#pricing" className="btn btn-primary hidden text-[0.85rem] sm:inline-flex">
-              Launch Your Release
+              Launch My Release
               <span className="btn-nib">
                 <ArrowUpRight />
               </span>
@@ -130,7 +130,7 @@ export default function Nav() {
               'transform 800ms cubic-bezier(0.16,1,0.3,1) 420ms, opacity 800ms cubic-bezier(0.16,1,0.3,1) 420ms',
           }}
         >
-          Launch Your Release
+          Launch My Release
           <span className="btn-nib">
             <ArrowUpRight />
           </span>
