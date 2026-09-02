@@ -1,4 +1,5 @@
 import { PLANS } from '../../lib/plans';
+import { BRAND } from '../../lib/content';
 import CheckoutButton from '../CheckoutButton';
 import { Check, Lock } from '../Icons';
 
@@ -21,42 +22,40 @@ export default function Pricing() {
           <h2 className="mt-6 text-[2.5rem] sm:text-[3.4rem]">
             Pay per release. <span className="text-gradient-mint">No retainer.</span>
           </h2>
-          <p className="mt-5 text-[1rem] leading-relaxed text-white/55">
-            Choose your distribution depth. You approve the written release before it is sent.
-          </p>
+          <p className="mt-5 text-[1rem] leading-relaxed text-white/55">{BRAND.urgency}</p>
         </header>
 
         <div className="mt-14 grid items-start gap-5 lg:grid-cols-2 lg:gap-6">
-          {plans.map((plan, i) => (
-            <PlanCard key={plan.id} plan={plan} delay={i * 110} />
+          {plans.map((plan) => (
+            <PlanCard key={plan.id} plan={plan} />
           ))}
         </div>
 
-        <div className="reveal mt-8 flex flex-wrap items-center justify-center gap-x-7 gap-y-3 text-white/38">
+        <div className="mt-10 flex flex-wrap items-center justify-center gap-x-7 gap-y-3 text-white/38">
           <span className="flex items-center gap-2 text-[0.8rem]">
             <Lock width={13} height={13} /> Secure checkout by Stripe
           </span>
-          <span className="text-[0.8rem]">Approval required before distribution</span>
-          <span className="text-[0.8rem]">Placement reporting included</span>
+          <span className="text-[0.8rem]">You approve before distribution</span>
+          <span className="text-[0.8rem]">Draft back within 2 business days</span>
         </div>
       </div>
     </section>
   );
 }
 
-function PlanCard({ plan, delay }) {
+function PlanCard({ plan }) {
   const featured = plan.featured;
 
   return (
-    <div className="reveal h-full" style={{ '--reveal-delay': `${delay}ms` }}>
+    <div className={`h-full ${featured ? 'lg:-mt-3 lg:scale-[1.035]' : ''}`}>
       <div
-        className="bezel bezel-lift h-full"
+        className="bezel plan-card h-full"
         style={
           featured
             ? {
                 background:
-                  'linear-gradient(150deg, rgba(127,240,192,0.2), rgba(109,92,246,0.16) 60%, rgba(255,255,255,0.03))',
-                boxShadow: 'inset 0 0 0 1px rgba(127,240,192,0.24), var(--ambient)',
+                  'linear-gradient(150deg, rgba(127,240,192,0.24), rgba(109,92,246,0.18) 60%, rgba(255,255,255,0.03))',
+                boxShadow: 'inset 0 0 0 1px rgba(127,240,192,0.3), var(--ambient)',
               }
             : undefined
         }
@@ -69,9 +68,7 @@ function PlanCard({ plan, delay }) {
                 {plan.tagline}
               </p>
             </div>
-            {featured && (
-              <span className="eyebrow shrink-0">AI layer</span>
-            )}
+            {featured && <span className="eyebrow shrink-0">Recommended — AI layer</span>}
           </div>
 
           <div className="mt-7 flex items-baseline gap-2">
@@ -86,6 +83,18 @@ function PlanCard({ plan, delay }) {
               {plan.cadence}
             </span>
           </div>
+
+          {plan.delta && (
+            <p
+              className="mt-5 rounded-2xl px-4 py-3 text-[0.86rem] leading-snug text-white/78"
+              style={{
+                background: 'rgba(127,240,192,0.08)',
+                boxShadow: 'inset 0 0 0 1px rgba(127,240,192,0.22)',
+              }}
+            >
+              {plan.delta}
+            </p>
+          )}
 
           <div className="mt-7 rule" />
 
@@ -117,8 +126,7 @@ function PlanCard({ plan, delay }) {
           />
 
           <p className="mt-4 text-center text-[0.74rem] text-white/32">
-            One-time payment · {plan.name === 'Premium' ? '500+' : '300+'} outlet distribution
-            network · Reported placements vary
+            One-time payment · Distribution network — reported placements vary
           </p>
         </div>
       </div>

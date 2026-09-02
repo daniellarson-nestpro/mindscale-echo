@@ -1,36 +1,34 @@
 import { ArrowUpRight } from '../Icons';
 import { BRAND } from '../../lib/content';
+import { PLANS } from '../../lib/plans';
 
 export default function Footer() {
   const year = new Date().getFullYear();
 
   return (
-    <footer className="relative pb-14 pt-8">
+    <footer className="relative pb-14 pt-10">
       <div className="page-shell">
         <div className="reveal">
           <div className="bezel">
             <div className="bezel-core px-7 py-12 text-center sm:px-10 sm:py-16">
               <span className="eyebrow eyebrow-dot">Ready when you are</span>
               <h2 className="mx-auto mt-6 max-w-3xl text-[2.3rem] leading-[0.98] sm:text-[3.4rem]">
-                <span className="text-gradient">You already earned the story.</span>
+                <span className="text-white/92">You already made the news. Now make it </span>
+                <span className="text-gradient-mint">everywhere</span>
+                <span className="text-white/92">.</span>
               </h2>
               <p className="mx-auto mt-5 max-w-xl text-[1rem] leading-relaxed text-white/52">
-                {BRAND.hook}
+                Send us your local article. We’ll write the release and distribute it.
               </p>
               <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
                 <a href="#pricing" className="btn btn-primary">
-                  {BRAND.primaryCta}
-                  <span className="btn-nib">
-                    <ArrowUpRight />
-                  </span>
-                </a>
-                <a href="#how-it-works" className="btn btn-ghost">
-                  {BRAND.secondaryCta}
+                  Send Us the Article — {PLANS.basic.priceLabel}
                   <span className="btn-nib">
                     <ArrowUpRight />
                   </span>
                 </a>
               </div>
+              <p className="mt-5 text-[0.8rem] text-white/32">{BRAND.ctaMicro}</p>
             </div>
           </div>
         </div>
@@ -42,9 +40,10 @@ export default function Footer() {
               A {BRAND.parent} product
             </span>
           </p>
-          <p className="text-center text-[0.74rem] leading-relaxed text-white/28 sm:text-right">
+          <p className="max-w-xl text-center text-[0.74rem] leading-relaxed text-white/28 sm:text-right">
             © {year} {BRAND.parent}. Distribution network and eligible placements vary by package,
-            newsworthiness, and editorial discretion. Outlet names do not imply endorsement.
+            newsworthiness, and editorial discretion. Outlet and platform names identify the
+            distribution network and do not imply endorsement or guaranteed pickup.
           </p>
         </div>
       </div>
