@@ -6,7 +6,7 @@ import { getStripe } from '../../lib/stripe';
 import { PLANS } from '../../lib/plans';
 import { Check, ArrowUpRight } from '../../components/Icons';
 import { getAuthSecret } from '../../lib/auth';
-import { upsertOrderFromCheckoutSession } from '../../lib/orders';
+import { notifyPaidOrder, upsertOrderFromCheckoutSession } from '../../lib/orders';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,11 +36,13 @@ export default async function SuccessPage({ searchParams }) {
   const paid = session ? session.payment_status === 'paid' : null;
 
   if (session && paid && sessionId && getAuthSecret()) {
+    let order = null;
     try {
-      await upsertOrderFromCheckoutSession(session);
+      order = await upsertOrderFromCheckoutSession(session);
     } catch (err) {
       console.error('[success] persist failed:', err?.message);
     }
+    await notifyPaidOrder(order);
     const next = encodeURIComponent('/account?welcome=1');
     redirect(`/api/auth/claim?session_id=${encodeURIComponent(sessionId)}&next=${next}`);
   }
