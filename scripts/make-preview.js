@@ -101,7 +101,10 @@ async function main() {
   let doc = html
     .replace(/<link[^>]+rel="stylesheet"[^>]+href="[^"]+\.css"[^>]*\/?>/g, '')
     .replace(/<link[^>]+rel="preload"[^>]+as="script"[^>]*\/?>/g, '')
-    .replace(/<script[\s\S]*?<\/script>/g, '');
+    .replace(/<script[\s\S]*?<\/script>/g, '')
+    // The preview is served from an arbitrary path, so root-relative anchors
+    // would navigate to the host root. Keep them on-page.
+    .replace(/href="\/#/g, 'href="#');
 
   const runtime = [toPlainScript('lib/geo.js'), toPlainScript('lib/broadcast.js')].join('\n');
 

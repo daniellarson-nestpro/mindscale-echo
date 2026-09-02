@@ -1,18 +1,27 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { ArrowUpRight } from './Icons';
 
 const LINKS = [
-  { href: '/#reach', label: 'Reach' },
-  { href: '/#trophy', label: 'Example' },
-  { href: '/#how-it-works', label: 'How it works' },
-  { href: '/#pricing', label: 'Pricing' },
-  { href: '/#faq', label: 'FAQ' },
+  { id: 'reach', label: 'Reach' },
+  { id: 'trophy', label: 'Example' },
+  { id: 'how-it-works', label: 'How it works' },
+  { id: 'pricing', label: 'Pricing' },
+  { id: 'faq', label: 'FAQ' },
 ];
 
 export default function Nav() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+
+  // Same-page anchors on the landing page (no navigation, no dependency on
+  // being served from the domain root); absolute links from /success, /cancel.
+  const isHome = pathname === '/';
+  const to = (id) => (isHome ? `#${id}` : `/#${id}`);
+  const links = LINKS.map((l) => ({ ...l, href: to(l.id) }));
+  const buyHref = to('pricing');
 
   useEffect(() => {
     document.body.style.overflow = open ? 'hidden' : '';
@@ -35,7 +44,7 @@ export default function Nav() {
               'inset 0 0 0 1px rgba(255,255,255,0.09), inset 0 1px 0 rgba(255,255,255,0.13), 0 24px 60px -30px rgba(0,0,0,0.95)',
           }}
         >
-          <a href="/#top" className="flex shrink-0 items-center gap-2.5">
+          <a href={isHome ? "#top" : "/#top"} className="flex shrink-0 items-center gap-2.5">
             <Mark />
             <span className="font-display text-[0.98rem] tracking-[-0.02em] text-white">
               Mindscale <span className="text-white/45">Echo</span>
@@ -43,7 +52,7 @@ export default function Nav() {
           </a>
 
           <ul className="hidden items-center gap-8 lg:flex">
-            {LINKS.map((l) => (
+            {links.map((l) => (
               <li key={l.href}>
                 <a
                   href={l.href}
@@ -56,7 +65,7 @@ export default function Nav() {
           </ul>
 
           <div className="flex items-center gap-2">
-            <a href="/#pricing" className="btn btn-primary hidden text-[0.85rem] sm:inline-flex">
+            <a href={buyHref} className="btn btn-primary hidden text-[0.85rem] sm:inline-flex">
               Launch My Release
               <span className="btn-nib">
                 <ArrowUpRight />
@@ -100,7 +109,7 @@ export default function Nav() {
         }}
       >
         <ul className="space-y-2">
-          {LINKS.map((l, i) => (
+          {links.map((l, i) => (
             <li
               key={l.href}
               style={{
@@ -120,7 +129,7 @@ export default function Nav() {
           ))}
         </ul>
         <a
-          href="/#pricing"
+          href={buyHref}
           onClick={() => setOpen(false)}
           className="btn btn-primary mt-12 w-max"
           style={{
