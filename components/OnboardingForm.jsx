@@ -4,7 +4,14 @@ import { useState } from 'react';
 import { ANNOUNCEMENT_TYPES } from '../lib/content';
 import { ArrowUpRight, Check } from './Icons';
 
-export default function OnboardingForm({ sessionId = '', plan = '', prefillEmail = '' }) {
+export default function OnboardingForm({
+  sessionId = '',
+  orderId = '',
+  plan = '',
+  prefillEmail = '',
+  successHref = '/',
+  framed = true,
+}) {
   const [status, setStatus] = useState('idle'); // idle | sending | done | error
   const [error, setError] = useState(null);
   const [logoName, setLogoName] = useState('');
@@ -16,6 +23,7 @@ export default function OnboardingForm({ sessionId = '', plan = '', prefillEmail
 
     const data = new FormData(event.currentTarget);
     data.set('sessionId', sessionId);
+    data.set('orderId', orderId);
     data.set('plan', plan);
 
     try {
@@ -31,12 +39,12 @@ export default function OnboardingForm({ sessionId = '', plan = '', prefillEmail
   }
 
   if (status === 'done') {
-    return <Confirmation />;
+    return <Confirmation href={successHref} />;
   }
 
   return (
-    <form onSubmit={onSubmit} className="bezel block">
-      <div className="bezel-core p-6 sm:p-9">
+    <form onSubmit={onSubmit} className={framed ? 'bezel block' : 'block'}>
+      <div className={framed ? 'bezel-core p-6 sm:p-9' : ''}>
         <div className="grid gap-5 sm:grid-cols-2">
           <Field label="Company name" name="companyName" required placeholder="Northline Coffee Co." />
           <Field
@@ -177,7 +185,8 @@ function Field({ label, name, hint, required, ...rest }) {
   );
 }
 
-function Confirmation() {
+function Confirmation({ href = '/' }) {
+  const toWorkspace = href.startsWith('/account');
   return (
     <div className="bezel bezel-accent">
       <div
@@ -201,10 +210,10 @@ function Confirmation() {
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-[1.02rem] leading-relaxed text-white/60">
           Your release request has been received. Our team will prepare your draft for review
-          before distribution.
+          before distribution. You can log back in anytime with the same email.
         </p>
-        <a href="/" className="btn btn-ghost mt-9">
-          Back to Mindscale Echo
+        <a href={href} className="btn btn-ghost mt-9">
+          {toWorkspace ? 'View your release' : 'Back to Mindscale Echo'}
           <span className="btn-nib">
             <ArrowUpRight />
           </span>

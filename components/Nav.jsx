@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { ArrowUpRight } from './Icons';
+import AuthNavLink from './AuthNavLink';
 
 const LINKS = [
   { href: '/#how-it-works', label: 'How it works' },
@@ -11,7 +12,7 @@ const LINKS = [
   { href: '/#faq', label: 'FAQ' },
 ];
 
-export default function Nav() {
+export default function Nav({ userEmail = '' }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -55,7 +56,27 @@ export default function Nav() {
             ))}
           </ul>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            {userEmail ? (
+              <>
+                <a
+                  href="/account"
+                  className="text-[0.85rem] text-white/55 transition-colors duration-500 ease-haptic hover:text-white"
+                >
+                  Workspace
+                </a>
+                <form action="/api/auth/logout" method="POST" className="hidden sm:block">
+                  <button
+                    type="submit"
+                    className="text-[0.85rem] text-white/45 transition-colors duration-500 ease-haptic hover:text-white"
+                  >
+                    Log out
+                  </button>
+                </form>
+              </>
+            ) : (
+              <AuthNavLink className="text-[0.85rem] text-white/55 transition-colors duration-500 ease-haptic hover:text-white" />
+            )}
             <a href="/#pricing" className="btn btn-primary hidden text-[0.85rem] sm:inline-flex">
               Launch Your Release
               <span className="btn-nib">
@@ -119,6 +140,30 @@ export default function Nav() {
             </li>
           ))}
         </ul>
+        {userEmail ? (
+          <>
+            <a
+              href="/account"
+              onClick={() => setOpen(false)}
+              className="mt-10 block py-2 font-display text-[2.2rem] leading-none text-white"
+            >
+              Workspace
+            </a>
+            <form action="/api/auth/logout" method="POST">
+              <button
+                type="submit"
+                className="mt-2 block py-2 font-display text-[2.2rem] leading-none text-white/55"
+              >
+                Log out
+              </button>
+            </form>
+          </>
+        ) : (
+          <AuthNavLink
+            onClick={() => setOpen(false)}
+            className="mt-10 block py-2 font-display text-[2.2rem] leading-none text-white"
+          />
+        )}
         <a
           href="/#pricing"
           onClick={() => setOpen(false)}
