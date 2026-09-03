@@ -1,33 +1,55 @@
 import { NextResponse } from 'next/server';
+import { getSession } from '../../../lib/auth';
+import { isDatabaseConfigured } from '../../../lib/db';
+import {
+  briefSavedBody,
+  getLeadByEmail,
+  leadToBriefJson,
+  saveLeadFromPayload,
+} from '../../../lib/leads';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * STUB — per-section brief autosave. To be folded into the existing
- * POST /api/onboarding rather than living as a separate store.
- *
- * PATCH receives partial field maps on blur and on a 2s idle debounce.
- * Partial records are the normal case, not an error. Locked field names:
- * companyName, website, contactName, contactEmail, phone, articleUrl,
- * announcementType, quote, quoteAttribution, notes (+ articleFile, articleText,
- * logo as uploads).
- *
- * Requires a lead row so a brief can exist before any Stripe session.
+ * Hyperagent alias of PATCH /api/onboarding (lead autosave).
+ * GET resumes the authenticated lead as { brief } or { brief: null }.
  */
 export async function PATCH(request) {
-  let patch = {};
+  const session = getSession();
+  if (!session?.email) {
+    return NextResponse.json({ error: 'auth' }, { status: 401 });
+  }
+  if (!isDatabaseConfigured()) {
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+  }
+
+  let body;
   try {
-    patch = await request.json();
+    body = await request.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
   }
 
-  console.log('[brief PATCH STUB]', Object.keys(patch));
-  return NextResponse.json({ saved: true, at: new Date().toISOString() });
+  const payload = body && typeof body === 'object' ? body : {};
+  // articleFile / logo binary intentionally discarded in this slice.
+  const saved = await saveLeadFromPayload(session.email, payload);
+  if (saved.error === 'database') {
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+  }
+  return NextResponse.json(briefSavedBody());
 }
 
 export async function GET() {
-  // HOOK: return the saved brief so /brief can resume mid-form.
-  return NextResponse.json({ brief: null });
+  const session = getSession();
+  if (!session?.email || !isDatabaseConfigured()) {
+    return NextResponse.json({ brief: null });
+  }
+  try {
+    const lead = await getLeadByEmail(session.email);
+    return NextResponse.json(leadToBriefJson(lead));
+  } catch (err) {
+    console.error('[brief] resume failed:', err?.message);
+    return NextResponse.json({ brief: null });
+  }
 }

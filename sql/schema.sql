@@ -46,3 +46,30 @@ CREATE TABLE IF NOT EXISTS magic_links (
 );
 
 CREATE INDEX IF NOT EXISTS magic_links_email_idx ON magic_links (email);
+
+-- V2: 6-digit code lives on the same attempt as the long token.
+ALTER TABLE magic_links ADD COLUMN IF NOT EXISTS code_hash TEXT;
+ALTER TABLE magic_links ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE magic_links ADD COLUMN IF NOT EXISTS next_path TEXT;
+
+-- Unpurchased briefs cannot live on orders (stripe_session_id is NOT NULL UNIQUE).
+CREATE TABLE IF NOT EXISTS leads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT NOT NULL UNIQUE,
+  contact_name TEXT,
+  phone TEXT,
+  company_name TEXT,
+  website TEXT,
+  announcement_type TEXT,
+  article_url TEXT,
+  article_text TEXT,
+  quote TEXT,
+  quote_attribution TEXT,
+  notes TEXT,
+  furthest_step TEXT NOT NULL DEFAULT 'brief',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  verified_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS leads_email_idx ON leads (email);

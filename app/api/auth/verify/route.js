@@ -1,37 +1,78 @@
 import { NextResponse } from 'next/server';
+import {
+  PENDING_COOKIE,
+  SESSION_COOKIE,
+  consumeMagicCode,
+  createSessionToken,
+  getAuthSecret,
+  isValidEmail,
+  normalizeEmail,
+  pendingCookieOptions,
+  safeRelativePath,
+  sessionCookieOptions,
+} from '../../../../lib/auth';
+import { verifyErrorBody, verifySuccessBody } from '../../../../lib/codes';
+import { isDatabaseConfigured } from '../../../../lib/db';
+import { markLeadVerified, progressForEmail, upsertLead } from '../../../../lib/leads';
+import {
+  PREFILL_COOKIE,
+  prefillCookieOptions,
+  prefillToLeadFields,
+  readPrefillToken,
+  sanitizePrefill,
+} from '../../../../lib/prefill';
+import { cookies } from 'next/headers';
+import { pathForStep } from '../../../../lib/progress';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/**
- * STUB — replaced by the backend's verification. Frontend expects:
- *  - { next } or { redirectTo } so /auth/callback and this screen route to the
- *    furthest incomplete step rather than always dumping to /brief
- *  - { expired: true } distinguished from a simply wrong code, so the UI can
- *    show the calm "that timed out, here's a fresh one" screen
- *  - prefill { contactName, phone } persisted on success
- *
- * While stubbed: any 6 digits verify, except 000000 (wrong) and 111111
- * (expired) so both failure states are reviewable.
- */
+function fail(error) {
+  return NextResponse.json(verifyErrorBody(error), { status: 400 });
+}
+
 export async function POST(request) {
-  let body = {};
+  let body;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
+    return fail('invalid');
   }
 
-  const code = String(body.code || '');
-
-  if (code === '111111') {
-    return NextResponse.json({ error: 'Code expired.', expired: true }, { status: 401 });
+  const email = normalizeEmail(body?.email);
+  if (!isValidEmail(email) || !getAuthSecret()) {
+    return fail('invalid');
   }
-  if (!/^\d{6}$/.test(code) || code === '000000') {
-    return NextResponse.json({ error: 'That code isn’t matching.' }, { status: 401 });
+  if (!isDatabaseConfigured()) {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
   }
 
-  console.log('[auth/verify STUB]', { email: body.email, prefill: body.prefill || null });
+  const consumed = await consumeMagicCode(email, body?.code);
+  if (consumed.error === 'database') {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+  if (consumed.error) return fail(consumed.error);
 
-  return NextResponse.json({ verified: true, next: '/brief', furthestStep: 'brief' });
+  const jar = cookies();
+  const cookiePrefill = readPrefillToken(jar.get(PREFILL_COOKIE)?.value);
+  const extra = {
+    ...prefillToLeadFields(cookiePrefill),
+    ...prefillToLeadFields(sanitizePrefill(body?.prefill || {})),
+  };
+  if (Object.keys(extra).length) {
+    await upsertLead(email, extra);
+  }
+  await markLeadVerified(email);
+
+  const progress = await progressForEmail(email);
+  const nextPath = consumed.nextPath ? safeRelativePath(consumed.nextPath, '') : '';
+  const redirectTo = nextPath || pathForStep(progress.furthestStep);
+
+  const response = NextResponse.json(
+    verifySuccessBody({ furthestStep: progress.furthestStep, redirectTo })
+  );
+  response.cookies.set(SESSION_COOKIE, createSessionToken(email), sessionCookieOptions());
+  response.cookies.set(PENDING_COOKIE, '', { ...pendingCookieOptions(), maxAge: 0 });
+  response.cookies.set(PREFILL_COOKIE, '', { ...prefillCookieOptions(), maxAge: 0 });
+  return response;
 }

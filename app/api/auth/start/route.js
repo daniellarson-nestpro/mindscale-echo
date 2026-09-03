@@ -1,43 +1,114 @@
 import { NextResponse } from 'next/server';
+import {
+  PENDING_COOKIE,
+  createPendingToken,
+  getAuthSecret,
+  hasLiveUnusedLink,
+  isValidEmail,
+  issueMagicLink,
+  normalizeEmail,
+  pendingCookieOptions,
+  safeRelativePath,
+} from '../../../../lib/auth';
+import { V2_LINK_TTL_MS, startOkBody } from '../../../../lib/codes';
+import { isDatabaseConfigured } from '../../../../lib/db';
+import { buildLoginUrl, sendVerificationCodeEmail, siteOrigin } from '../../../../lib/email';
+import { upsertLead } from '../../../../lib/leads';
+import { mergeStartLeadFields } from '../../../../lib/prefill';
+import { clientIp, createRateLimiter } from '../../../../lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/**
- * STUB — to be replaced by the backend's extension of the existing V1 magic
- * link (`POST /api/auth/login`). Do not build a second login on top of this.
- *
- * Contract the frontend expects:
- *  - issues a 6-digit code AND a long-secret link for the same attempt
- *  - either redeems, and redeeming one burns both
- *  - 20-minute expiry
- *  - optional `prefill` { contactName, phone } attaches to the PENDING record
- *    so it survives verification on another device, or abandonment
- *  - optional `context` { articleUrl, articleText, announcementType, ... }
- *    captured before the gate
- *  - identical response for a new vs returning email — never disclose
- *    whether an account exists
- */
+const cooldown = new Map();
+const COOLDOWN_MS = 30 * 1000;
+const ipLimit = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 8 });
+
+function ok(email, extra) {
+  const response = NextResponse.json(startOkBody(email));
+  if (extra?.pendingToken) {
+    response.cookies.set(PENDING_COOKIE, extra.pendingToken, pendingCookieOptions());
+  }
+  return response;
+}
+
 export async function POST(request) {
-  let body = {};
+  let body;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request.' }, { status: 400 });
+    return NextResponse.json({ ok: false, error: 'invalid' }, { status: 400 });
   }
 
-  const email = String(body.email || '').trim();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    return NextResponse.json({ error: 'We need a valid email.' }, { status: 400 });
+  const email = normalizeEmail(body?.email);
+  if (!isValidEmail(email)) {
+    return NextResponse.json({ ok: false, error: 'invalid' }, { status: 400 });
   }
 
-  console.log('[auth/start STUB]', {
-    email,
-    resend: Boolean(body.resend),
-    prefill: body.prefill || null,
-    context: body.context || null,
+  if (!isDatabaseConfigured() || !getAuthSecret()) {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  const origin = siteOrigin(request);
+  if (!origin || !buildLoginUrl(origin, 'probe')) {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  const nextPath = body?.next ? safeRelativePath(body.next, '') : '';
+  const leadFields = mergeStartLeadFields(body?.prefill, body?.context);
+  try {
+    await upsertLead(email, leadFields);
+  } catch (err) {
+    console.error('[auth/start] lead upsert failed:', err?.message);
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  // VerifyForm saveProfile sends resend:false + name/phone. Attach to the
+  // pending lead without burning the live code.
+  if (body?.resend === false && (await hasLiveUnusedLink(email))) {
+    return ok(email);
+  }
+
+  const ip = clientIp(request);
+  if (!ipLimit.check(`start:${ip}`).ok) {
+    return ok(email);
+  }
+
+  const last = cooldown.get(email);
+  if (body?.resend !== true && last && Date.now() - last < COOLDOWN_MS) {
+    return ok(email);
+  }
+
+  cooldown.set(email, Date.now());
+
+  const issued = await issueMagicLink(email, {
+    withCode: true,
+    ttlMs: V2_LINK_TTL_MS,
+    nextPath: nextPath || null,
+  });
+  if (issued.error || !issued.token || !issued.code) {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  const loginUrl = buildLoginUrl(origin, issued.token, nextPath || undefined);
+  if (!loginUrl) {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  const mail = await sendVerificationCodeEmail({
+    to: email,
+    loginUrl,
+    code: issued.code,
+    codeDisplay: issued.codeDisplay,
   });
 
-  // Same shape regardless of whether the account exists.
-  return NextResponse.json({ sent: true, expiresInMinutes: 20 });
+  if (!mail.sent) {
+    console.info('[auth/start] code issued; email not sent:', mail.reason, email);
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[auth/start] dev code:', issued.codeDisplay, 'url:', loginUrl);
+    }
+  }
+
+  const pendingToken = createPendingToken({ email, linkId: issued.id });
+  return ok(email, { pendingToken });
 }

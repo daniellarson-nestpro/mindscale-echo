@@ -91,6 +91,46 @@ Auth never lists another customer’s orders — queries are scoped to the signe
 
 ---
 
+## V2 auth / leads APIs (backend slice)
+
+Inverted-funnel screens (`/start`, `/start/verify`, `/brief`, `/preview`) are a separate frontend stream. This slice ships the APIs those screens can call. No new env vars — reuse `AUTH_SECRET`, `RESEND_API_KEY`, `EMAIL_FROM`, and Postgres.
+
+Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` stays NOT NULL UNIQUE and paid-only. After a paid checkout, a complete lead brief is copied onto that order when the order has none yet.
+
+| Endpoint | Purpose |
+| -------- | ------- |
+| `POST /api/auth/start` | Email-only gate. Upserts a lead, issues **one** magic_links row (long token + hashed 6-digit code, 20 min). Always `{ ok: true, email, sent: true }` — never the code, never whether the email existed. Optional `prefill` and `context` (`articleUrl`, `articleText`, `announcementType`, `companyName`, `quote`) are stored on the lead before verify. `resend: false` attaches wait-filler fields without burning a live code. |
+| `POST /api/auth/verify` | Body `{ email, code, prefill? }`. Hyphens/spaces stripped (`483-201` → `483201`). Constant-time hash compare. Success sets `echo_session` and returns `{ ok, verified, furthestStep, redirectTo, next }`. Wrong code `{ error: "invalid" }`; expired `{ error: "expired", expired: true }`. 8 failed tries then resend. |
+| `GET /api/auth/callback?token=` | Redeeming the long token burns the same attempt. Redirects to the furthest incomplete step (`/brief` for new leads, `/account` if they already paid). Safe `next` is honored. |
+| `GET /api/session/status` | 3s cross-device poll. `{ verified: false }` until this browser has a session **or** the pending start cookie’s attempt was redeemed on another device (then this browser gets the session too). No email enumeration. |
+| `GET /api/auth/me` | Still `{ email }`. Also `furthestStep`, `redirectTo`, `ladder` when cheap. |
+| `GET /api/account` | JSON for the workspace ladder: lead, orders, `ladder` (`empty` / `in_progress` / `draft_ready_unpurchased` / `purchased`). |
+| `POST /api/articles/resolve` | Ungated article scrape. Rate-limited (IP + optional email). SSRF-blocked. Weak parse still `{ ok: true, title: null, warning: "unparsed" }`. |
+| `POST /api/article/resolve` | Hyperagent alias. Same scrape. Response `{ url, headline, outlet, date, partial }`. Garbage URL: 400 `{ error }`. Weak fetch/parse: `partial: true`. |
+| `PATCH /api/brief` + `GET /api/brief` | Hyperagent alias of lead autosave / resume. PATCH → `{ saved: true }`. GET → `{ brief }` or `{ brief: null }`. |
+| `POST /api/prefill` + `GET /api/prefill` | Signed httpOnly cookie (10 min, `AUTH_SECRET`). Query-style fields: `email`, `companyName`, `articleUrl`, `quote`, `contactName`, `phone`. Does **not** create an account. Frontend should `history.replaceState` the URL clean. Verify merges the cookie into the lead and clears it. |
+| `PATCH /api/onboarding` | Authenticated JSON autosave onto the lead. Same camelCase names as today’s POST. `articleFile` is ignored (storage is a later PR). `POST /api/onboarding` still attaches a brief to a **paid** order. |
+
+`POST /api/auth/login` is unchanged (30-minute magic-link email, same copy). Existing unused 30-minute links expire on their own.
+
+Verification email (V2 only):
+
+```
+Subject: Your Mindscale Echo code: 483-201
+
+Here's your code: 483201. Good for 20 minutes. Or just tap the button below.
+```
+
+Plus the existing callback button/link. Purchase-confirmation email is untouched.
+
+`furthestStep` is one of `brief` | `preview` | `checkout` | `account`. `/account` order cards expose `data-order-id` (Stripe session id, else order id).
+
+```bash
+npm test    # node:test — code redeem, leak shape, scrape SSRF, rate limit
+```
+
+---
+
 ## Purchase confirmation email
 
 After a Checkout Session is **paid**, Mindscale Echo sends one confirmation via Resend
@@ -259,11 +299,20 @@ app/
   api/checkout/route.js      Creates the Stripe Checkout Session + Customer
   api/onboarding/route.js    Saves the brief onto the order
   api/stripe-webhook/route.js  checkout.session.completed → persist order + confirmation email
-  api/auth/login/route.js    Issue magic link
-  api/auth/callback/route.js Consume magic link, set cookie
+  api/auth/login/route.js    Issue magic link (V1, 30 min)
+  api/auth/start/route.js    V2 email gate + 20 min code+link
+  api/auth/verify/route.js   Redeem 6-digit code
+  api/auth/callback/route.js Consume magic link, set cookie, resume furthest step
   api/auth/claim/route.js    Sign in from a verified Checkout session_id
   api/auth/logout/route.js   Clear session cookie
-  api/auth/me/route.js       { email } for the header
+  api/auth/me/route.js       { email, furthestStep } for the header
+  api/session/status/route.js  Cross-device poll
+  api/prefill/route.js       Signed outbound prefill cookie
+  api/articles/resolve/route.js  Ungated article scrape (v1 field names)
+  api/article/resolve/route.js   Same scrape, Hyperagent field names
+  api/brief/route.js         Lead autosave / resume (Hyperagent alias)
+  api/account/route.js       Workspace JSON (lead + orders + ladder)
+  api/onboarding/route.js    POST paid brief / PATCH lead autosave
 components/
   Nav.jsx                    Floating glass pill nav + Log in / Workspace
   CheckoutButton.jsx         Client-side checkout trigger with error surface
@@ -280,11 +329,14 @@ lib/
   stripe.js                  Lazy Stripe client + origin resolution
   db.js                      Neon client + schema ensure
   orders.js                  Idempotent order upsert + brief attach + confirmation send
-  auth.js                    Signed cookie session + magic-link tokens
-  email.js                   Resend: purchase confirmation + magic-link sender
+  auth.js                    Signed cookie session + magic-link tokens + hashed codes
+  email.js                   Resend: purchase confirmation + magic-link + V2 code mail
+  leads.js                   Unpurchased briefs + furthest step
+  prefill.js                 Signed 10-minute outbound cookie
+  scrape.js / ssrf.js        Article fetch with timeouts, size cap, SSRF checks
   release-status.js          Paid / Brief received vs placeholder steps
 sql/
-  schema.sql                 orders + magic_links
+  schema.sql                 orders + magic_links + leads
 ```
 
 ## Editing copy

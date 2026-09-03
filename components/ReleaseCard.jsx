@@ -18,7 +18,7 @@ export default function ReleaseCard({ order, email }) {
   const current = currentStepId(order);
 
   return (
-    <article className="bezel">
+    <article className="bezel" data-order-id={order.stripe_session_id || order.id}>
       <div className="bezel-core overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-4 sm:px-7">
           <div>
