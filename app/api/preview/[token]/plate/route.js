@@ -124,15 +124,24 @@ export async function GET() {
     y += 14;
   });
 
-  // Quote — its own paragraph, no pull-quote treatment. Press releases
-  // don't pull-quote.
-  wrap(`“${d.quote}” — ${d.quoteAttribution}`, COL).forEach((line) => {
-    out.push(
-      `<text x="${PAD}" y="${y}" font-family="Georgia, serif" font-size="15" fill="#111">${esc(
-        line
-      )}</text>`
-    );
-    y += 24;
+  // Quotes — each its own paragraph, no pull-quote treatment. Press releases
+  // don't pull-quote. Co-owners and a GM follow the primary voice.
+  const voices = [
+    { quote: d.quote, attribution: d.quoteAttribution },
+    ...(d.additionalQuotes || []),
+  ].filter((q) => q.quote);
+
+  voices.forEach((v) => {
+    const line = v.attribution ? `“${v.quote}” — ${v.attribution}` : `“${v.quote}”`;
+    wrap(line, COL).forEach((row) => {
+      out.push(
+        `<text x="${PAD}" y="${y}" font-family="Georgia, serif" font-size="15" fill="#111">${esc(
+          row
+        )}</text>`
+      );
+      y += 24;
+    });
+    y += 14;
   });
 
   // End mark — its absence is noticed by exactly the people we send to.

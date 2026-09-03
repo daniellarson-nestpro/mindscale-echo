@@ -82,9 +82,16 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
             </p>
           ))}
 
-          <p className="mt-6 text-[1.02rem] leading-[1.75] text-white/72">
-            “{draft.quote}” — {draft.quoteAttribution}
-          </p>
+          {[
+            { quote: draft.quote, attribution: draft.quoteAttribution },
+            ...(draft.additionalQuotes || []),
+          ]
+            .filter((q) => q.quote)
+            .map((q, i) => (
+              <p key={i} className="mt-6 text-[1.02rem] leading-[1.75] text-white/72">
+                “{q.quote}”{q.attribution ? ` — ${q.attribution}` : ''}
+              </p>
+            ))}
 
           <p className="mt-8 font-mono text-[10px] uppercase tracking-eyebrow text-white/35">
             About {draft.companyName}

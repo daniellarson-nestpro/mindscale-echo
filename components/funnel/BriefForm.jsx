@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import ArticleDrop from './ArticleDrop';
 import LogoUpload from './LogoUpload';
 import ComposeWait from './ComposeWait';
-import { BRIEF, FIELDS, ANNOUNCEMENT_CHIPS } from '../../lib/funnel';
+import { BRIEF, FIELDS, ANNOUNCEMENT_CHIPS, MAX_QUOTES } from '../../lib/funnel';
 import { ArrowUpRight } from '../Icons';
 
 const REQUIRED = ['companyName', 'contactName', 'contactEmail', 'announcementType'];
@@ -34,6 +34,12 @@ export default function BriefForm({ initial = {} }) {
     ...initial,
   });
   const [sources, setSources] = useState(initial.sources || []);
+  /**
+   * Voices beyond the first. The primary quote keeps the locked `quote` /
+   * `quoteAttribution` names; these serialize into `additionalQuotes` so the
+   * contract stays intact.
+   */
+  const [extraQuotes, setExtraQuotes] = useState(initial.additionalQuotes || []);
   const [logo, setLogo] = useState(null);
   const [save, setSave] = useState('idle'); // idle | saving | failed
   const [errors, setErrors] = useState({});
@@ -95,6 +101,25 @@ export default function BriefForm({ initial = {} }) {
     clearTimeout(debounce.current);
     persist({ [name]: values[name] });
   };
+
+  const addQuote = () =>
+    setExtraQuotes((q) => [...q, { quote: '', attribution: '' }]);
+
+  const updateQuote = (i, key, value) =>
+    setExtraQuotes((q) => q.map((row, x) => (x === i ? { ...row, [key]: value } : row)));
+
+  const removeQuote = (i) => {
+    setExtraQuotes((q) => {
+      const next = q.filter((_, x) => x !== i);
+      persist({ additionalQuotes: next.filter((r) => r.quote.trim() || r.attribution.trim()) });
+      return next;
+    });
+  };
+
+  const saveQuotes = () =>
+    persist({
+      additionalQuotes: extraQuotes.filter((q) => q.quote.trim() || q.attribution.trim()),
+    });
 
   function validate() {
     const next = {};
@@ -368,6 +393,100 @@ export default function BriefForm({ initial = {} }) {
                 />
               </div>
             </div>
+
+            {/* Additional voices — co-owners, a partner, the GM. Revealed only
+                once the first quote exists, so the section never opens as a
+                wall of empty quote boxes. */}
+            {extraQuotes.map((q, i) => (
+              <div
+                key={i}
+                className="mt-5 rounded-[1.5rem] p-5"
+                style={{
+                  background: 'rgba(255,255,255,0.022)',
+                  boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.09)',
+                }}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] uppercase tracking-eyebrow text-white/38">
+                    {FIELDS.additionalQuote.label(i + 2)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeQuote(i)}
+                    className="text-[0.78rem] text-white/35 transition-colors duration-300 hover:text-white"
+                  >
+                    {FIELDS.additionalQuote.remove}
+                  </button>
+                </div>
+
+                <div className="mt-4">
+                  <label className="field-label" htmlFor={`extraQuote${i + 2}`}>
+                    {FIELDS.additionalQuote.quoteLabel}
+                  </label>
+                  <textarea
+                    id={`extraQuote${i + 2}`}
+                    name={`quote_${i + 2}`}
+                    rows={3}
+                    value={q.quote}
+                    onChange={(e) => updateQuote(i, 'quote', e.target.value)}
+                    onBlur={saveQuotes}
+                    placeholder={FIELDS.additionalQuote.quotePlaceholder}
+                    className="field resize-y"
+                  />
+                </div>
+
+                <div className="mt-4">
+                  <label className="field-label" htmlFor={`extraAttribution${i + 2}`}>
+                    {FIELDS.additionalQuote.attributionLabel}
+                  </label>
+                  <input
+                    id={`extraAttribution${i + 2}`}
+                    name={`quoteAttribution_${i + 2}`}
+                    value={q.attribution}
+                    onChange={(e) => updateQuote(i, 'attribution', e.target.value)}
+                    onBlur={saveQuotes}
+                    placeholder={FIELDS.additionalQuote.attributionPlaceholder}
+                    className="field"
+                  />
+                </div>
+              </div>
+            ))}
+
+            {values.quote.trim().length > 10 && extraQuotes.length + 1 < MAX_QUOTES && (
+              <div className="mt-5">
+                <button type="button" onClick={addQuote} className="btn btn-ghost text-[0.85rem]">
+                  {FIELDS.additionalQuote.add}
+                  <span className="btn-nib">
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 5v14M5 12h14" />
+                    </svg>
+                  </span>
+                </button>
+                <p className="mt-2 text-[0.78rem] leading-relaxed text-white/32">
+                  {extraQuotes.length >= 1
+                    ? FIELDS.additionalQuote.plenty
+                    : FIELDS.additionalQuote.addHint}
+                </p>
+              </div>
+            )}
+
+            {/* Serialized for the backend alongside the locked primary fields. */}
+            <input
+              type="hidden"
+              name="additionalQuotes"
+              value={JSON.stringify(
+                extraQuotes.filter((q) => q.quote.trim() || q.attribution.trim())
+              )}
+            />
           </section>
 
           <div className="rule" />
