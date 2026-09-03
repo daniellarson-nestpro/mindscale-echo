@@ -12,12 +12,15 @@ import {
   normalizeCode,
   startOkBody,
   verifyErrorBody,
+  verifySuccessBody,
 } from '../lib/codes.js';
 import { inferStepFromLead, ladderState, pathForStep, resolveFurthestStep } from '../lib/progress.js';
 import { createRateLimiter } from '../lib/rate-limit.js';
 import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
 import { parseArticleHtml } from '../lib/article-html.js';
-import { cleanPhone, sanitizePrefill } from '../lib/prefill-fields.js';
+import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
+import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
+import { briefSavedBody, leadToBriefJson } from '../lib/brief-shape.js';
 
 const SECRET = 'test-auth-secret';
 
@@ -83,13 +86,46 @@ test('code redeem: success, wrong, expired, lockout', () => {
 });
 
 test('start never leaks existence; verify errors stay generic', () => {
-  assert.deepEqual(startOkBody('new@example.com'), { ok: true, email: 'new@example.com' });
-  assert.deepEqual(startOkBody('old@example.com'), { ok: true, email: 'old@example.com' });
-  assert.deepEqual(Object.keys(startOkBody('a@b.co')).sort(), ['email', 'ok']);
+  assert.deepEqual(startOkBody('new@example.com'), { ok: true, email: 'new@example.com', sent: true });
+  assert.deepEqual(startOkBody('old@example.com'), { ok: true, email: 'old@example.com', sent: true });
+  assert.deepEqual(Object.keys(startOkBody('a@b.co')).sort(), ['email', 'ok', 'sent']);
   assert.deepEqual(verifyErrorBody('invalid'), { ok: false, error: 'invalid' });
   assert.deepEqual(verifyErrorBody('missing'), { ok: false, error: 'invalid' });
-  assert.deepEqual(verifyErrorBody('expired'), { ok: false, error: 'expired' });
+  assert.deepEqual(verifyErrorBody('expired'), { ok: false, error: 'expired', expired: true });
+  assert.equal(verifyErrorBody('expired').expired, true);
   assert.equal(JSON.stringify(verifyErrorBody('no-such-user')), JSON.stringify(verifyErrorBody('wrong')));
+  const success = verifySuccessBody({ furthestStep: 'brief', redirectTo: '/brief' });
+  assert.equal(success.next, '/brief');
+  assert.equal(success.redirectTo, '/brief');
+  assert.equal(success.verified, true);
+  assert.equal(success.furthestStep, 'brief');
+});
+
+test('start context persists onto lead fields like prefill', () => {
+  const context = sanitizeContext({
+    articleUrl: 'https://localpaper.com/story',
+    articleText: 'Shop opened downtown.',
+    announcementType: 'Grand opening',
+    companyName: 'Northline',
+    quote: 'We opened.',
+    junk: '<script>',
+  });
+  assert.deepEqual(context, {
+    articleUrl: 'https://localpaper.com/story',
+    articleText: 'Shop opened downtown.',
+    announcementType: 'Grand opening',
+    companyName: 'Northline',
+    quote: 'We opened.',
+  });
+  const merged = mergeStartLeadFields(
+    { contactName: 'Dana', phone: '555-123-4567' },
+    { companyName: 'Northline', articleUrl: 'javascript:alert(1)', quote: 'We opened.' }
+  );
+  assert.equal(merged.contactName, 'Dana');
+  assert.equal(merged.phone, '555-123-4567');
+  assert.equal(merged.companyName, 'Northline');
+  assert.equal(merged.quote, 'We opened.');
+  assert.equal(merged.articleUrl, undefined);
 });
 
 test('furthestStep and ladder from lead/order state', () => {
@@ -164,6 +200,65 @@ test('rate limiter trips after max hits', () => {
   assert.equal(limiter.check('ip').ok, true);
   assert.equal(limiter.check('ip').ok, false);
   assert.equal(limiter.check('other').ok, true);
+});
+
+test('singular article route uses Hyperagent field names', () => {
+  assert.equal(normalizeArticleInput('example.com/story'), 'https://example.com/story');
+  assert.equal(normalizeArticleInput('https://news.example/x'), 'https://news.example/x');
+  const weak = toHyperagentArticle(
+    { ok: true, articleUrl: 'https://news.example/x', title: null, outlet: 'news.example', warning: 'unparsed' },
+    'https://news.example/x'
+  );
+  assert.equal(weak.status, 200);
+  assert.deepEqual(weak.body, {
+    url: 'https://news.example/x',
+    headline: null,
+    outlet: 'news.example',
+    date: null,
+    partial: true,
+  });
+  const rich = toHyperagentArticle(
+    {
+      ok: true,
+      articleUrl: 'https://gazette.example/shop',
+      title: 'Shop opens downtown',
+      outlet: 'Daily Gazette',
+      date: '2026-04-01',
+    },
+    'https://gazette.example/shop'
+  );
+  assert.equal(rich.body.headline, 'Shop opens downtown');
+  assert.equal(rich.body.url, 'https://gazette.example/shop');
+  assert.equal(rich.body.partial, false);
+  assert.equal(rich.body.date, formatChipDate('2026-04-01'));
+  const garbage = toHyperagentArticle({ ok: false, error: 'invalid_url', status: 400 }, '');
+  assert.equal(garbage.status, 400);
+  assert.ok(garbage.body.error);
+  const failed = toHyperagentArticle({ ok: false, error: 'fetch_failed' }, 'https://news.example/x');
+  assert.equal(failed.status, 200);
+  assert.equal(failed.body.partial, true);
+});
+
+test('PATCH /api/brief response and GET resume shape', () => {
+  assert.deepEqual(briefSavedBody(), { saved: true });
+  assert.deepEqual(leadToBriefJson(null), { brief: null });
+  const brief = leadToBriefJson({
+    email: 'dana@northline.com',
+    company_name: 'Northline',
+    contact_name: 'Dana',
+    phone: '555-123-4567',
+    announcement_type: 'Grand opening',
+    article_url: 'https://localpaper.com/story',
+    article_text: '',
+    website: '',
+    quote: 'We opened.',
+    quote_attribution: '',
+    notes: '',
+  });
+  assert.equal(brief.brief.companyName, 'Northline');
+  assert.equal(brief.brief.contactName, 'Dana');
+  assert.equal(brief.brief.contactEmail, 'dana@northline.com');
+  assert.equal(brief.brief.articleUrl, 'https://localpaper.com/story');
 });
 
 test('weak HTML parse still returns a payload', () => {

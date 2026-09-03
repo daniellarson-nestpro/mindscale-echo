@@ -11,10 +11,16 @@ import {
   safeRelativePath,
   sessionCookieOptions,
 } from '../../../../lib/auth';
-import { verifyErrorBody } from '../../../../lib/codes';
+import { verifyErrorBody, verifySuccessBody } from '../../../../lib/codes';
 import { isDatabaseConfigured } from '../../../../lib/db';
 import { markLeadVerified, progressForEmail, upsertLead } from '../../../../lib/leads';
-import { PREFILL_COOKIE, prefillCookieOptions, prefillToLeadFields, readPrefillToken } from '../../../../lib/prefill';
+import {
+  PREFILL_COOKIE,
+  prefillCookieOptions,
+  prefillToLeadFields,
+  readPrefillToken,
+  sanitizePrefill,
+} from '../../../../lib/prefill';
 import { cookies } from 'next/headers';
 import { pathForStep } from '../../../../lib/progress';
 
@@ -48,8 +54,11 @@ export async function POST(request) {
   if (consumed.error) return fail(consumed.error);
 
   const jar = cookies();
-  const prefill = readPrefillToken(jar.get(PREFILL_COOKIE)?.value);
-  const extra = prefillToLeadFields(prefill);
+  const cookiePrefill = readPrefillToken(jar.get(PREFILL_COOKIE)?.value);
+  const extra = {
+    ...prefillToLeadFields(cookiePrefill),
+    ...prefillToLeadFields(sanitizePrefill(body?.prefill || {})),
+  };
   if (Object.keys(extra).length) {
     await upsertLead(email, extra);
   }
@@ -59,12 +68,9 @@ export async function POST(request) {
   const nextPath = consumed.nextPath ? safeRelativePath(consumed.nextPath, '') : '';
   const redirectTo = nextPath || pathForStep(progress.furthestStep);
 
-  const response = NextResponse.json({
-    ok: true,
-    verified: true,
-    furthestStep: progress.furthestStep,
-    redirectTo,
-  });
+  const response = NextResponse.json(
+    verifySuccessBody({ furthestStep: progress.furthestStep, redirectTo })
+  );
   response.cookies.set(SESSION_COOKIE, createSessionToken(email), sessionCookieOptions());
   response.cookies.set(PENDING_COOKIE, '', { ...pendingCookieOptions(), maxAge: 0 });
   response.cookies.set(PREFILL_COOKIE, '', { ...prefillCookieOptions(), maxAge: 0 });

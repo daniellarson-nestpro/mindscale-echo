@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSession, normalizeEmail } from '../../../lib/auth';
 import { getStripe } from '../../../lib/stripe';
 import { attachBrief } from '../../../lib/orders';
-import { upsertLead } from '../../../lib/leads';
+import { saveLeadFromPayload, upsertLead } from '../../../lib/leads';
 import { isDatabaseConfigured } from '../../../lib/db';
 
 export const runtime = 'nodejs';
@@ -193,19 +193,7 @@ export async function PATCH(request) {
 
   const payload = body && typeof body === 'object' ? body : {};
   // articleFile / logo binary intentionally discarded in this slice.
-  const saved = await upsertLead(session.email, {
-    contactName: payload.contactName,
-    phone: payload.phone,
-    companyName: payload.companyName,
-    website: payload.website,
-    announcementType: payload.announcementType,
-    articleUrl: payload.articleUrl,
-    articleText: payload.articleText,
-    quote: payload.quote,
-    quoteAttribution: payload.quoteAttribution,
-    notes: payload.notes,
-    furthestStep: payload.furthestStep,
-  });
+  const saved = await saveLeadFromPayload(session.email, payload);
 
   if (saved.error === 'database') {
     return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });

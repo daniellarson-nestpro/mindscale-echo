@@ -3,6 +3,7 @@ import {
   PENDING_COOKIE,
   createPendingToken,
   getAuthSecret,
+  hasLiveUnusedLink,
   isValidEmail,
   issueMagicLink,
   normalizeEmail,
@@ -13,7 +14,7 @@ import { V2_LINK_TTL_MS, startOkBody } from '../../../../lib/codes';
 import { isDatabaseConfigured } from '../../../../lib/db';
 import { buildLoginUrl, sendVerificationCodeEmail, siteOrigin } from '../../../../lib/email';
 import { upsertLead } from '../../../../lib/leads';
-import { prefillToLeadFields, sanitizePrefill } from '../../../../lib/prefill';
+import { mergeStartLeadFields } from '../../../../lib/prefill';
 import { clientIp, createRateLimiter } from '../../../../lib/rate-limit';
 
 export const runtime = 'nodejs';
@@ -45,10 +46,27 @@ export async function POST(request) {
   }
 
   if (!isDatabaseConfigured() || !getAuthSecret()) {
-    return NextResponse.json(
-      { ok: false, error: 'unavailable' },
-      { status: 503 }
-    );
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  const origin = siteOrigin(request);
+  if (!origin || !buildLoginUrl(origin, 'probe')) {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  const nextPath = body?.next ? safeRelativePath(body.next, '') : '';
+  const leadFields = mergeStartLeadFields(body?.prefill, body?.context);
+  try {
+    await upsertLead(email, leadFields);
+  } catch (err) {
+    console.error('[auth/start] lead upsert failed:', err?.message);
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  // VerifyForm saveProfile sends resend:false + name/phone. Attach to the
+  // pending lead without burning the live code.
+  if (body?.resend === false && (await hasLiveUnusedLink(email))) {
+    return ok(email);
   }
 
   const ip = clientIp(request);
@@ -57,26 +75,8 @@ export async function POST(request) {
   }
 
   const last = cooldown.get(email);
-  if (last && Date.now() - last < COOLDOWN_MS) {
+  if (body?.resend !== true && last && Date.now() - last < COOLDOWN_MS) {
     return ok(email);
-  }
-
-  const origin = siteOrigin(request);
-  if (!origin || !buildLoginUrl(origin, 'probe')) {
-    return NextResponse.json(
-      { ok: false, error: 'unavailable' },
-      { status: 503 }
-    );
-  }
-
-  const nextPath = body?.next ? safeRelativePath(body.next, '') : '';
-  const prefill = sanitizePrefill(body?.prefill || {});
-  const leadFields = prefillToLeadFields(prefill);
-  try {
-    await upsertLead(email, leadFields);
-  } catch (err) {
-    console.error('[auth/start] lead upsert failed:', err?.message);
-    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
   }
 
   cooldown.set(email, Date.now());
