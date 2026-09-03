@@ -99,7 +99,7 @@ Inverted-funnel screens (`/start`, `/start/verify`, `/brief`, `/preview`, `/chec
 
 Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` stays NOT NULL UNIQUE and paid-only. After a paid checkout, a complete lead brief is copied onto that order when the order has none yet.
 
-`POST /api/brief/complete` is the only n8n call. The browser POSTs that route (ComposeWait); it never talks to n8n. n8n does not email the customer. HTTP 200 from n8n can still mean `ok: false` — Echo branches on `ok`. Timeout / network is 502 `{ ok: false, error }`; the brief stays in progress. A saved compose JSON is reused (one paid run per lead).
+`POST /api/brief/complete` is the only n8n call. The browser POSTs that route (ComposeWait); it never talks to n8n. n8n does not email the customer. HTTP 200 from n8n can still mean `ok: false` — Echo branches on `ok`. Timeout / network is 502 `{ ok: false, error }`; the brief stays in progress. `{ ok: true }` is only returned after n8n `ok: true` (saved as `compose_json` with `source: "n8n"`). Template / `draftFromBrief` copy is never a successful compose. A prior n8n draft is reused only if `source` is `n8n` and the brief has not been edited since.
 
 | Endpoint | Purpose |
 | -------- | ------- |
@@ -112,7 +112,7 @@ Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` st
 | `POST /api/articles/resolve` | Ungated article scrape. Rate-limited (IP + optional email). SSRF-blocked. Weak parse still `{ ok: true, title: null, warning: "unparsed" }`. |
 | `POST /api/article/resolve` | Hyperagent alias. Same scrape. Response `{ url, headline, outlet, date, partial }`. Garbage URL: 400 `{ error }`. Weak fetch/parse: `partial: true`. |
 | `PATCH /api/brief` + `GET /api/brief` | Hyperagent alias of lead autosave / resume. PATCH → `{ saved: true }`. GET with a session → `{ brief }` or `{ brief: null }`. No session → 401 `{ error: "auth" }` (V2 `/start`, not V1 `/login`). |
-| `POST /api/brief/complete` | Session required. Loads the lead, scrapes `articleUrl` if `articleText` is empty, POSTs n8n `/webhook/press-release` (never `/webhook-test/`). On `ok: true`, saves compose JSON on the lead and returns `{ ok: true, token }`. On `ok: false` / timeout, `{ ok: false, error }` and furthest step stays in progress. Existing draft or in-flight compose is reused. |
+| `POST /api/brief/complete` | Session required. Loads the lead, scrapes `articleUrl` if `articleText` is empty, POSTs n8n `/webhook/press-release` (never `/webhook-test/`). `{ ok: true, token }` only after n8n `ok: true` (saved with `source: "n8n"`). On `ok: false` / timeout, `{ ok: false, error }` and furthest step stays in progress. Reuses a prior run only if `compose_json.source` is `n8n` and the brief has not been edited since. |
 | `POST /api/prefill` + `GET /api/prefill` | Signed httpOnly cookie (10 min, `AUTH_SECRET`). Query-style fields: `email`, `companyName`, `articleUrl`, `quote`, `contactName`, `phone`. Does **not** create an account. Frontend should `history.replaceState` the URL clean. Verify merges the cookie into the lead and clears it. |
 | `PATCH /api/onboarding` | Authenticated JSON autosave onto the lead. Same camelCase names as today’s POST. `articleFile` is ignored (storage is a later PR). `POST /api/onboarding` still attaches a brief to a **paid** order. |
 

@@ -17,6 +17,7 @@ export default function ComposeWait({ onDone, onCancel }) {
   const [stage, setStage] = useState(0);
   const [slow, setSlow] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [failError, setFailError] = useState('');
 
   useEffect(() => {
     const stages = [
@@ -33,8 +34,11 @@ export default function ComposeWait({ onDone, onCancel }) {
         if (cancelled) return;
         if (!res.ok || data.ok !== true) throw new Error(data.error || 'compose failed');
         onDone?.(data.token);
-      } catch {
-        if (!cancelled) setFailed(true);
+      } catch (err) {
+        if (!cancelled) {
+          setFailError(err?.message && err.message !== 'compose failed' ? err.message : '');
+          setFailed(true);
+        }
       }
     })();
 
@@ -53,10 +57,14 @@ export default function ComposeWait({ onDone, onCancel }) {
           <p className="mx-auto mt-4 max-w-md text-[1rem] leading-relaxed text-white/58">
             {COMPOSE.failSub}
           </p>
+          {failError ? (
+            <p className="mx-auto mt-3 max-w-md text-[0.9rem] leading-relaxed text-white/45">{failError}</p>
+          ) : null}
           <button
             type="button"
             onClick={() => {
               setFailed(false);
+              setFailError('');
               onCancel?.();
             }}
             className="btn btn-primary mx-auto mt-8"

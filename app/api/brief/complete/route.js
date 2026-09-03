@@ -2,13 +2,13 @@ import { NextResponse } from 'next/server';
 import { getSession } from '../../../../lib/auth';
 import {
   COMPOSE_WAIT_MS,
-  hasSavedCompose,
+  buildComposePayload,
+  canReuseN8nCompose,
   normalizeComposeResponse,
   previewTokenFor,
   resolveArticleText,
   statusForComposeError,
   waitForExistingCompose,
-  buildComposePayload,
 } from '../../../../lib/compose';
 import { isDatabaseConfigured } from '../../../../lib/db';
 import {
@@ -41,8 +41,9 @@ function failResponse(error, status) {
 }
 
 /**
- * Pre-payment compose. Server calls n8n; the browser only POSTs this route.
- * Does not email the customer.
+ * Pre-payment compose. ok:true only after n8n returns ok:true (or a saved
+ * payload with source:'n8n'). Local template copy is never a successful compose.
+ * The browser only POSTs this route; it does not call n8n or email anyone.
  */
 export async function POST() {
   const session = getSession();
@@ -69,7 +70,8 @@ export async function POST() {
     return failResponse('unavailable', 503);
   }
 
-  if (hasSavedCompose(lead)) {
+  if (canReuseN8nCompose(lead)) {
+    console.info('[brief/complete] skip n8n reuse source=n8n');
     return okResponse(lead);
   }
 
@@ -82,9 +84,13 @@ export async function POST() {
   }
 
   if (!claimed.claimed) {
-    if (hasSavedCompose(claimed.lead)) return okResponse(claimed.lead);
+    if (canReuseN8nCompose(claimed.lead)) {
+      console.info('[brief/complete] skip n8n reuse source=n8n');
+      return okResponse(claimed.lead);
+    }
     const waited = await waitForExistingCompose(lead.id, { getLead: getLeadById });
-    if (waited.ok) return okResponse(waited.lead);
+    if (waited.ok && canReuseN8nCompose(waited.lead)) return okResponse(waited.lead);
+    if (waited.ok) return failResponse('compose_failed', 200);
     return failResponse(waited.error, waited.status || 200);
   }
 

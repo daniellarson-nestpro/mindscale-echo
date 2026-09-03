@@ -14,7 +14,7 @@ import {
   verifyErrorBody,
   verifySuccessBody,
 } from '../lib/codes.js';
-import { inferStepFromLead, ladderState, pathForStep, resolveFurthestStep } from '../lib/progress.js';
+import { inferStepFromLead, ladderState, pathForStep, resolveFurthestStep, hasComposeDraft } from '../lib/progress.js';
 import { createRateLimiter } from '../lib/rate-limit.js';
 import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
 import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
@@ -35,11 +35,16 @@ import {
   resolveArticleText,
   statusForComposeError,
   waitForExistingCompose,
+  briefNewerThanCompose,
+  canReuseN8nCompose,
+  composeLockAllowsNewRun,
+  hasN8nCompose,
 } from '../lib/compose.js';
 import {
   callN8nCompose,
   DEFAULT_N8N_WEBHOOK_URL,
   n8nRequestHeaders,
+  n8nWebhookHost,
   n8nWebhookUrl,
 } from '../lib/n8n.js';
 import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../lib/url.js';
@@ -471,6 +476,7 @@ test('saved compose JSON wins over draftFromBrief', () => {
   const fallback = draftFromBrief(brief, now);
   const saved = {
     ok: true,
+    source: 'n8n',
     headline: 'Northline opens downtown',
     subhead: 'A real subhead',
     dateline: 'COLUMBUS, OH — September 3, 2026',
@@ -491,7 +497,9 @@ test('saved compose JSON wins over draftFromBrief', () => {
   assert.equal(JSON.stringify(draft).toLowerCase().includes('sal'), false);
   assert.equal(parseComposeJson(JSON.stringify(saved)).headline, 'Northline opens downtown');
   assert.equal(parseComposeJson('{"ok":false}'), null);
+  assert.equal(hasN8nCompose({ compose_json: JSON.stringify(saved) }), true);
   assert.equal(hasSavedCompose({ compose_json: JSON.stringify(saved) }), true);
+  assert.equal(hasSavedCompose({ compose_json: JSON.stringify({ ok: true, headline: 'Local template' }) }), false);
   assert.equal(hasSavedCompose({ compose_json: null }), false);
 });
 
@@ -644,7 +652,36 @@ test('n8n compose branches on ok, not HTTP status', async () => {
   }
 });
 
-test('in-flight compose is reused; saved draft short-circuits', async () => {
+test('callN8nCompose logs host, duration, ok, error without secrets', async () => {
+  const logs = [];
+  const orig = console.info;
+  console.info = (...args) => logs.push(args);
+  try {
+    await callN8nCompose(
+      { companyName: 'Northline' },
+      {
+        url: DEFAULT_N8N_WEBHOOK_URL,
+        fetchImpl: async () => ({
+          status: 200,
+          json: async () => ({ ok: false, error: 'articleText too brief' }),
+        }),
+      }
+    );
+  } finally {
+    console.info = orig;
+  }
+  const line = logs.find((args) => String(args[0]).includes('[n8n compose]'));
+  assert.ok(line);
+  const payload = line[1];
+  assert.equal(payload.host, 'nestpro.app.n8n.cloud');
+  assert.equal(n8nWebhookHost(), 'nestpro.app.n8n.cloud');
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error, 'articleText too brief');
+  assert.equal(typeof payload.durationMs, 'number');
+  assert.equal(JSON.stringify(payload).includes('X-API-Key'), false);
+});
+
+test('only source n8n is reusable; template json is not success', async () => {
   const now = Date.parse('2026-09-03T12:00:00Z');
   const running = {
     id: 'lead-1',
@@ -654,25 +691,65 @@ test('in-flight compose is reused; saved draft short-circuits', async () => {
   };
   assert.equal(isComposeInFlight(running, now), true);
   assert.equal(isComposeInFlight({ ...running, compose_finished_at: new Date(now).toISOString() }, now), false);
+  assert.equal(isComposeInFlight({ ...running, compose_json: JSON.stringify({ ok: true, headline: 'Local' }) }, now), true);
+
+  const template = {
+    id: 'lead-1',
+    compose_json: JSON.stringify({ ok: true, headline: 'Local template', body: ['Hi'] }),
+    compose_finished_at: new Date(now).toISOString(),
+    updated_at: new Date(now).toISOString(),
+  };
+  assert.equal(hasN8nCompose(template), false);
+  assert.equal(canReuseN8nCompose(template), false);
+  assert.equal(composeLockAllowsNewRun(template, now), true);
+
+  const n8nSaved = {
+    id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    compose_json: JSON.stringify({ ok: true, source: 'n8n', headline: 'Done', body: ['Hi'] }),
+    compose_finished_at: new Date(now).toISOString(),
+    updated_at: new Date(now).toISOString(),
+  };
+  assert.equal(canReuseN8nCompose(n8nSaved), true);
+  assert.equal(composeLockAllowsNewRun(n8nSaved, now), false);
   assert.equal(
-    isComposeInFlight(
-      { ...running, compose_json: JSON.stringify({ ok: true, headline: 'Done', body: [] }) },
-      now
-    ),
+    briefNewerThanCompose({
+      ...n8nSaved,
+      updated_at: new Date(now + 1000).toISOString(),
+    }),
+    true
+  );
+  assert.equal(
+    canReuseN8nCompose({
+      ...n8nSaved,
+      updated_at: new Date(now + 1000).toISOString(),
+    }),
     false
   );
+  assert.equal(
+    composeLockAllowsNewRun(
+      {
+        ...n8nSaved,
+        updated_at: new Date(now + 1000).toISOString(),
+      },
+      now
+    ),
+    true
+  );
 
-  const savedLead = {
-    id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-    compose_json: JSON.stringify({ ok: true, headline: 'Done', body: ['Hi'] }),
-  };
+  const waitedTemplate = await waitForExistingCompose('lead-1', {
+    getLead: async () => template,
+    timeoutMs: 50,
+    intervalMs: 10,
+  });
+  assert.equal(waitedTemplate.ok, false);
+
   const waitedSaved = await waitForExistingCompose('lead-1', {
-    getLead: async () => savedLead,
+    getLead: async () => n8nSaved,
     timeoutMs: 50,
     intervalMs: 10,
   });
   assert.equal(waitedSaved.ok, true);
-  assert.equal(waitedSaved.token, savedLead.id);
+  assert.equal(waitedSaved.token, n8nSaved.id);
 
   let polls = 0;
   const waitedFail = await waitForExistingCompose('lead-1', {
@@ -698,14 +775,19 @@ test('compose_json marks the ladder draft-ready and preview furthest', () => {
   const withDraft = {
     company_name: 'Acme',
     announcement_type: 'launch',
-    compose_json: JSON.stringify({ ok: true, headline: 'Acme opens', body: ['Hi'] }),
+    compose_json: JSON.stringify({ ok: true, source: 'n8n', headline: 'Acme opens', body: ['Hi'] }),
   };
   assert.equal(inferStepFromLead(withDraft), 'preview');
   assert.equal(ladderState(withDraft, []), 'draft_ready_unpurchased');
   assert.equal(resolveFurthestStep({ ...withDraft, furthest_step: 'preview' }, []), 'preview');
+  assert.equal(
+    hasComposeDraft({ compose_json: JSON.stringify({ ok: true, headline: 'template' }) }),
+    false
+  );
+  assert.equal(hasComposeDraft(withDraft), true);
 });
 
-test('normalizeComposeResponse keeps the n8n field set', () => {
+test('normalizeComposeResponse stamps source n8n', () => {
   const normalized = normalizeComposeResponse({
     ok: true,
     headline: '  Northline opens  ',
@@ -713,6 +795,7 @@ test('normalizeComposeResponse keeps the n8n field set', () => {
     quote: 'We opened.',
   });
   assert.equal(normalized.ok, true);
+  assert.equal(normalized.source, 'n8n');
   assert.equal(normalized.headline, 'Northline opens');
   assert.deepEqual(normalized.body, ['Para one.', 'Para two.']);
   assert.equal(normalized.subhead, '');
@@ -727,6 +810,8 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
   const previewSrc = readFileSync(join(here, '../lib/preview-draft.js'), 'utf8');
   const plateSrc = readFileSync(join(here, '../app/api/preview/[token]/plate/route.js'), 'utf8');
   assert.equal(completeSrc.includes('callN8nCompose'), true);
+  assert.equal(completeSrc.includes('canReuseN8nCompose'), true);
+  assert.equal(completeSrc.includes('draftFromBrief'), false);
   assert.equal(completeSrc.includes('maxDuration'), true);
   assert.equal(completeSrc.includes('webhook-test'), false);
   assert.equal(completeSrc.includes('sendVerification'), false);
@@ -734,7 +819,6 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
   assert.equal(waitSrc.includes('n8n.cloud'), false);
   assert.equal(waitSrc.includes('/api/brief/complete'), true);
   assert.equal(waitSrc.includes('data.ok !== true'), true);
-  assert.equal(previewSrc.includes('composeJsonToDraft'), true);
-  assert.equal(previewSrc.includes('parseComposeJson'), true);
+  assert.equal(previewSrc.includes("saved?.source === 'n8n'"), true);
   assert.equal(plateSrc.includes('loadPreviewDraft'), true);
 });
