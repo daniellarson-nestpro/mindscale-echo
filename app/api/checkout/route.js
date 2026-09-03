@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getStripe, resolveOrigin } from '../../../lib/stripe';
 import { PLANS, priceIdFor, isPlaceholderPriceId } from '../../../lib/plans';
-import { appendCheckoutParams, safeRelativePath } from '../../../lib/url';
+import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../../../lib/url';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,11 +44,27 @@ export async function POST(request) {
 
   const origin = resolveOrigin(request);
   const nextPath = safeRelativePath(body?.next);
+  const email = looksLikeEmail(body?.email);
+  const token = nextPath ? safePreviewToken(body?.token) : null;
   const successPath = nextPath
-    ? appendCheckoutParams(nextPath, { planId })
+    ? appendCheckoutParams(nextPath, { planId, token })
     : `/success?session_id={CHECKOUT_SESSION_ID}&plan=${planId}`;
   // A safe `next` is the V2 funnel opt-in; send cancels back to /checkout.
-  const cancelPath = nextPath ? '/checkout' : `/cancel?plan=${planId}`;
+  const cancelPath = nextPath
+    ? token
+      ? `/checkout?token=${encodeURIComponent(token)}`
+      : '/checkout'
+    : `/cancel?plan=${planId}`;
+
+  const metadata = nextPath
+    ? {
+        funnel: 'v2',
+        token: token || 'demo',
+        email: email || '',
+        product: 'mindscale-echo',
+        plan: planId,
+      }
+    : { plan: planId, product: 'mindscale-echo' };
 
   try {
     const session = await stripe.checkout.sessions.create({
@@ -59,9 +75,11 @@ export async function POST(request) {
       billing_address_collection: 'auto',
       phone_number_collection: { enabled: true },
       allow_promotion_codes: true,
-      metadata: { plan: planId, product: 'mindscale-echo' },
+      ...(email ? { customer_email: email } : {}),
+      ...(token ? { client_reference_id: token } : {}),
+      metadata,
       payment_intent_data: {
-        metadata: { plan: planId, product: 'mindscale-echo' },
+        metadata,
         description: `Mindscale Echo — ${plan.name} release`,
       },
     });

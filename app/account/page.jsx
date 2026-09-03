@@ -1,6 +1,8 @@
 import FunnelShell from '../../components/funnel/FunnelShell';
-import { ACCOUNT } from '../../lib/draft';
+import { ACCOUNT, DEMO_DRAFT } from '../../lib/draft';
 import { PLANS } from '../../lib/plans';
+import { getStripe } from '../../lib/stripe';
+import { looksLikeEmail, safePreviewToken } from '../../lib/url';
 import { ArrowUpRight, ArrowRight, Check } from '../../components/Icons';
 
 export const metadata = {
@@ -10,13 +12,38 @@ export const metadata = {
 
 export const dynamic = 'force-dynamic';
 
-export default function AccountPage({ searchParams }) {
-  const paid = searchParams?.paid === '1';
+async function loadSession(sessionId) {
+  const stripe = getStripe();
+  if (!stripe || !sessionId) return null;
+  try {
+    return await stripe.checkout.sessions.retrieve(sessionId);
+  } catch {
+    return null;
+  }
+}
+
+export default async function AccountPage({ searchParams }) {
   const sessionId = typeof searchParams?.session_id === 'string' ? searchParams.session_id : '';
-  const planParam = typeof searchParams?.plan === 'string' ? searchParams.plan : '';
-  const plan = PLANS[planParam];
-  // HOOK: latest draft token for the signed-in owner. Demo stands in until then.
-  const previewHref = '/preview/demo';
+  const session = await loadSession(sessionId);
+  const meta = session?.metadata || {};
+
+  const paid = searchParams?.paid === '1' || session?.payment_status === 'paid';
+  const planId = meta.plan || (typeof searchParams?.plan === 'string' ? searchParams.plan : '');
+  const plan = PLANS[planId];
+  const token = safePreviewToken(searchParams?.token || meta.token || session?.client_reference_id);
+  const email =
+    looksLikeEmail(session?.customer_details?.email) ||
+    looksLikeEmail(session?.customer_email) ||
+    looksLikeEmail(meta.email) ||
+    looksLikeEmail(searchParams?.email) ||
+    '';
+
+  // STUB — brief/composer are not persisted on this branch (DEMO_DRAFT,
+  // PATCH /api/brief is a console.log). Show the demo company/summary so the
+  // return page isn't an empty V1 onboarding form. Do not render OnboardingForm.
+  const company = DEMO_DRAFT.companyName;
+  const summary = DEMO_DRAFT.headline;
+  const previewHref = `/preview/${token}`;
 
   return (
     <FunnelShell>
@@ -44,6 +71,12 @@ export default function AccountPage({ searchParams }) {
               </div>
               <h2 className="mt-6 text-[1.6rem] sm:text-[1.85rem]">{ACCOUNT.cardTitle}</h2>
               <p className="mt-3 text-[0.95rem] leading-relaxed text-white/55">{ACCOUNT.cardBody}</p>
+              <p className="mt-5 font-mono text-[10px] uppercase tracking-eyebrow text-white/38">
+                {company} · {summary}
+              </p>
+              {email ? (
+                <p className="mt-2 text-[0.88rem] leading-relaxed text-white/45">{email}</p>
+              ) : null}
             </div>
           </div>
         </div>

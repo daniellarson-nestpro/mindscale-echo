@@ -9,7 +9,9 @@ export const dynamic = 'force-dynamic';
  * Backend returns { verified, redirectTo }.
  *
  * Stubbed as never-verified so polling is exercised without hijacking review.
+ * `email` is null until a real session cookie exists — checkout also probes
+ * GET /api/auth/me for the same field.
  */
 export async function GET() {
-  return NextResponse.json({ verified: false, redirectTo: null });
+  return NextResponse.json({ verified: false, redirectTo: null, email: null });
 }
