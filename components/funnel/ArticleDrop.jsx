@@ -1,44 +1,33 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { STEP_ARTICLE } from '../../lib/funnel';
 import { Check } from '../Icons';
 
-const URLISH = /^(https?:\/\/|www\.)\S+$/i;
-const BARE_DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i;
+const MIN_PASTE_LENGTH = 100;
 
 /**
- * One box that accepts a link, a PDF, or pasted text and works out which it
- * got. A segmented control would force the owner to classify their situation
- * before acting — they don't know whether the thing in their inbox is "a PDF"
- * or "a link". So: one target, detection, then a confirmation chip.
- *
- * All three named inputs exist in the DOM at all times; two are hidden.
+ * V1 article intake: PDF upload or pasted text only.
+ * URL scraping is not an active path for V1 and is not presented to users.
+ * If text is too short we show a truthful error rather than proceeding.
  */
-export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error }) {
+export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
   const [draft, setDraft] = useState('');
   const [hint, setHint] = useState(null);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef(null);
   const areaRef = useRef(null);
 
-  const classify = (raw) => {
-    const text = raw.trim();
-    if (!text) return null;
-    if (URLISH.test(text) || BARE_DOMAIN.test(text)) return 'url';
-    if (text.length > 200) return 'text';
-    return 'ambiguous';
-  };
-
   const commit = (raw) => {
-    const kind = classify(raw);
-    if (!kind) return;
-    if (kind === 'ambiguous') {
-      setHint(STEP_ARTICLE.ambiguous);
+    const text = raw.trim();
+    if (!text) return;
+    if (text.length < MIN_PASTE_LENGTH) {
+      setHint(
+        `That looks too short for a factual press release (minimum ${MIN_PASTE_LENGTH} characters). Please paste more of the article or upload the full PDF.`
+      );
       return;
     }
     setHint(null);
-    onAdd(kind === 'url' ? { type: 'url', value: raw.trim() } : { type: 'text', value: raw.trim() });
+    onAdd({ type: 'text', value: text });
     setDraft('');
     if (areaRef.current) areaRef.current.style.height = 'auto';
   };
@@ -46,11 +35,15 @@ export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error
   const takeFile = (file) => {
     if (!file) return;
     if (file.type !== 'application/pdf') {
-      setHint('That needs to be a PDF. If it’s a photo of the clipping, paste the text instead.');
+      setHint('That needs to be a PDF. If you have the text, paste it instead.');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setHint('PDF must be under 20 MB.');
       return;
     }
     setHint(null);
-    onAdd({ type: 'file', value: file.name, file });
+    onAdd({ type: 'file', value: file.name, file, meta: `${(file.size / 1024).toFixed(0)} KB · PDF` });
   };
 
   const grow = (el) => {
@@ -79,9 +72,10 @@ export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error
             : 'inset 0 0 0 1px rgba(255,255,255,0.09)',
         }}
       >
-        <p className="field-label mb-3">{STEP_ARTICLE.label}</p>
+        <p className="field-label mb-3">News article or announcement</p>
         <p className="mb-4 text-[0.88rem] leading-relaxed text-white/45">
-          {STEP_ARTICLE.dropHint}
+          Paste the article text or attach a PDF. We use this as the factual basis for your
+          press release.
         </p>
 
         <div className="flex items-end gap-2">
@@ -96,7 +90,7 @@ export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error
             }}
             onPaste={(e) => {
               const pasted = e.clipboardData.getData('text');
-              if (pasted && pasted.trim().length > 200) {
+              if (pasted && pasted.trim().length >= MIN_PASTE_LENGTH) {
                 e.preventDefault();
                 commit(pasted);
               }
@@ -108,15 +102,16 @@ export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error
                 commit(draft);
               }
             }}
-            placeholder={STEP_ARTICLE.placeholder}
+            placeholder="Paste article text here…"
             className="field resize-none py-3.5 text-[0.98rem]"
             style={{ minHeight: '3rem' }}
-            aria-label={STEP_ARTICLE.label}
+            aria-label="Article text"
           />
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
             aria-label="Attach a PDF"
+            title="Upload PDF"
             className="mb-[0.15rem] flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white/55 transition-all duration-500 ease-haptic hover:text-white"
             style={{
               background: 'rgba(255,255,255,0.04)',
@@ -138,17 +133,13 @@ export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error
           </button>
         </div>
 
-        <p className="mt-3 text-[0.78rem] leading-relaxed text-white/32">{STEP_ARTICLE.hint}</p>
+        <p className="mt-3 text-[0.78rem] leading-relaxed text-white/32">
+          PDF or pasted text only. Minimum {MIN_PASTE_LENGTH} characters of article content.
+        </p>
 
         {(hint || error) && (
           <p role="alert" className="mt-3 text-[0.82rem] leading-relaxed text-amber-200/80">
             {hint || error}
-          </p>
-        )}
-
-        {resolving && (
-          <p className="mt-3 font-mono text-[10px] uppercase tracking-eyebrow text-echo-mint">
-            Looking it up…
           </p>
         )}
 
@@ -169,11 +160,16 @@ export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error
                   </span>
                   <span>
                     <span className="block text-[0.88rem] leading-snug text-white/85">
-                      {s.display || s.value}
+                      {s.type === 'file' ? s.value : s.value.slice(0, 80) + (s.value.length > 80 ? '…' : '')}
                     </span>
                     {s.meta && (
                       <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-eyebrow text-white/35">
                         {s.meta}
+                      </span>
+                    )}
+                    {s.type === 'text' && (
+                      <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-eyebrow text-white/35">
+                        {s.value.length} characters · pasted text
                       </span>
                     )}
                   </span>
@@ -202,27 +198,18 @@ export default function ArticleDrop({ sources, onAdd, onRemove, resolving, error
           </ul>
         )}
 
-        {sources.length > 0 && (
-          <button
-            type="button"
-            onClick={() => areaRef.current?.focus()}
-            className="mt-3 text-[0.8rem] text-echo-mint/80 transition-colors duration-300 hover:text-echo-mint"
-          >
-            {STEP_ARTICLE.addAnother}
-          </button>
-        )}
-
-        {/* Locked field names. Two are always hidden; all three are submitted. */}
-        <input
-          type="hidden"
-          name="articleUrl"
-          value={sources.find((s) => s.type === 'url')?.value || ''}
-        />
+        {/* Hidden fields for form submission */}
+        <input type="hidden" name="articleUrl" value="" />
         <textarea
           name="articleText"
           hidden
           readOnly
           value={sources.find((s) => s.type === 'text')?.value || ''}
+        />
+        <input
+          type="hidden"
+          name="articleSource"
+          value={sources.length > 0 ? (sources.find((s) => s.type === 'file') ? 'pdf' : 'paste') : ''}
         />
         <input
           ref={fileRef}

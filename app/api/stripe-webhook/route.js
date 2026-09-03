@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getStripe } from '../../../lib/stripe';
 import { notifyPaidOrder, upsertOrderFromCheckoutSession } from '../../../lib/orders';
+import { notifyOwnerPaymentSuccess, recordStatusTransition } from '../../../lib/notify';
+import { updateLeadOrderStatus } from '../../../lib/leads';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,5 +53,28 @@ export async function POST(request) {
 
   // Email failures are logged inside notifyPaidOrder and must not 500 the webhook.
   await notifyPaidOrder(order);
+
+  // Owner notification (Telegram + email)
+  if (order) {
+    notifyOwnerPaymentSuccess({
+      leadId: order.lead_id || '',
+      email: order.email,
+      plan: order.plan,
+      amountCents: order.amount_cents,
+    }).catch(() => {});
+
+    // Mark lead order_status as 'paid'
+    if (order.lead_id) {
+      updateLeadOrderStatus(order.lead_id, 'paid').catch(() => {});
+      recordStatusTransition({
+        leadId: order.lead_id,
+        orderId: order.id,
+        fromStatus: null,
+        toStatus: 'paid',
+        actor: 'stripe_webhook',
+      }).catch(() => {});
+    }
+  }
+
   return NextResponse.json({ received: true });
 }

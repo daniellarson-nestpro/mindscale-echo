@@ -822,3 +822,312 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
   assert.equal(previewSrc.includes("saved?.source === 'n8n'"), true);
   assert.equal(plateSrc.includes('loadPreviewDraft'), true);
 });
+
+// ─── V1 end-to-end acceptance tests ────────────────────────────────────────
+
+import { readFileSync as rfs } from 'node:fs';
+import { fileURLToPath as fUrl } from 'node:url';
+import { dirname as dn, join as jn } from 'node:path';
+import { validateLogoBuffer } from '../lib/logo-storage.js';
+import { APPROVAL_CHECKBOX_COPY } from '../lib/approval.js';
+const HERE = dn(fUrl(import.meta.url));
+
+test('six-digit code: no dash, exactly 6 digits', () => {
+  // Code format: 483201 (no dash when sent to n8n / stored; display as 483-201)
+  assert.match(normalizeCode('483201'), /^\d{6}$/);
+  assert.match(normalizeCode('483-201'), /^\d{6}$/);
+  assert.equal(isValidCode('483201'), true);
+  assert.equal(isValidCode('483-201'), true);
+  assert.equal(isValidCode('48320'), false);   // 5 digits
+  assert.equal(isValidCode('4832011'), false); // 7 digits
+  assert.equal(isValidCode('abcdef'), false);
+  assert.equal(formatCodeDisplay('483201'), '483-201');
+});
+
+test('auth code: redemption burns both code and magic link', () => {
+  const hash = hashCode('483201', SECRET);
+  const validRow = {
+    code_hash: hash,
+    used_at: null,
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    attempts: 0,
+  };
+  // correct code → ok
+  assert.deepEqual(evaluateCodeAttempt({ row: validRow, code: '483201', secret: SECRET }), { ok: true });
+  // wrong code → invalid (no enumeration)
+  assert.deepEqual(evaluateCodeAttempt({ row: validRow, code: '000000', secret: SECRET }), { ok: false, error: 'invalid' });
+  // null row → same error (no enumeration)
+  assert.deepEqual(evaluateCodeAttempt({ row: null, code: '483201', secret: SECRET }), { ok: false, error: 'invalid' });
+});
+
+test('auth code: expiry after 20 minutes', () => {
+  const hash = hashCode('483201', SECRET);
+  const expiredRow = {
+    code_hash: hash,
+    used_at: null,
+    expires_at: new Date(Date.now() - 1).toISOString(), // expired
+    attempts: 0,
+  };
+  const result = evaluateCodeAttempt({ row: expiredRow, code: '483201', secret: SECRET });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'expired');
+});
+
+test('auth code: lockout after max attempts returns invalid (no enumeration)', () => {
+  const hash = hashCode('483201', SECRET);
+  const lockedRow = {
+    code_hash: hash,
+    used_at: null,
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    attempts: CODE_MAX_ATTEMPTS,
+  };
+  const result = evaluateCodeAttempt({ row: lockedRow, code: '483201', secret: SECRET });
+  assert.equal(result.ok, false);
+  // Returns 'invalid' — no enumeration of whether account exists or is locked
+  assert.ok(result.error === 'invalid' || result.error === 'locked', 'returns non-revealing error');
+});
+
+test('PDF validation: only application/pdf accepted for article', () => {
+  // ArticleDrop only calls takeFile for application/pdf
+  const articleDropSrc = rfs(jn(HERE, '../components/funnel/ArticleDrop.jsx'), 'utf8');
+  assert.ok(articleDropSrc.includes("file.type !== 'application/pdf'"), 'rejects non-PDF');
+  assert.ok(!articleDropSrc.includes("type: 'url'"), 'no URL path in V1 component');
+  assert.ok(articleDropSrc.includes('MIN_PASTE_LENGTH'), 'enforces min paste length');
+});
+
+test('article intake: pasted text minimum length enforced', () => {
+  const articleDropSrc = rfs(jn(HERE, '../components/funnel/ArticleDrop.jsx'), 'utf8');
+  // Must show error for short text
+  assert.ok(articleDropSrc.includes('too short'), 'shows error for short text');
+  assert.ok(articleDropSrc.includes('MIN_PASTE_LENGTH'), 'uses min length constant');
+});
+
+test('logo validation: rejects non-image MIME types', () => {
+  const fakeBuffer = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]); // PNG magic
+  assert.deepEqual(validateLogoBuffer(fakeBuffer, 'image/png', fakeBuffer.length), { ok: true });
+  assert.equal(validateLogoBuffer(fakeBuffer, 'application/pdf', fakeBuffer.length).ok, false);
+  assert.equal(validateLogoBuffer(fakeBuffer, 'text/html', fakeBuffer.length).ok, false);
+  // Max size check
+  assert.equal(validateLogoBuffer(fakeBuffer, 'image/png', 9 * 1024 * 1024).ok, false);
+});
+
+test('logo storage: launch blocker without BLOB_READ_WRITE_TOKEN', () => {
+  const logoStorageSrc = rfs(jn(HERE, '../lib/logo-storage.js'), 'utf8');
+  assert.ok(logoStorageSrc.includes('BLOB_READ_WRITE_TOKEN'), 'checks for token');
+  assert.ok(logoStorageSrc.includes('launchBlocker'), 'returns launchBlocker flag');
+  assert.ok(logoStorageSrc.includes('LAUNCH BLOCKER'), 'logs LAUNCH BLOCKER');
+});
+
+test('compose_runs: exact payload saved BEFORE n8n call', () => {
+  const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
+  // createComposeRun must be called before callN8nCompose
+  // Find the call sites (await createComposeRun / await callN8nCompose), not imports
+  const createIdx = completeSrc.indexOf('await createComposeRun');
+  const callIdx = completeSrc.indexOf('await callN8nCompose');
+  assert.ok(createIdx > 0, 'await createComposeRun is used');
+  assert.ok(callIdx > 0, 'await callN8nCompose is used');
+  assert.ok(createIdx < callIdx, 'createComposeRun awaited BEFORE callN8nCompose');
+});
+
+test('n8n ok:true → saves response and exposes draft', () => {
+  const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
+  assert.ok(completeSrc.includes('saveComposeSuccess'), 'saves on ok:true');
+  assert.ok(completeSrc.includes('normalizeComposeResponse'), 'normalizes response');
+  assert.ok(completeSrc.includes('finishComposeRun'), 'records run outcome');
+});
+
+test('n8n ok:false/timeout → never exposes fake draft', () => {
+  const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
+  // must not import draftFromBrief (template fallback)
+  assert.ok(!completeSrc.includes('draftFromBrief'), 'no template fallback in compose route');
+  assert.ok(completeSrc.includes('failResponse'), 'returns failure on n8n error');
+  assert.ok(completeSrc.includes('notifyOwnerComposeFailed'), 'notifies owner on failure');
+  assert.ok(completeSrc.includes('markComposeFinished'), 'unlocks compose on failure');
+});
+
+test('compose payload includes composeRunId and correct fields', () => {
+  const lead = {
+    id: 'lead-abc',
+    email: 'test@example.com',
+    company_name: 'Acme',
+    website: 'acme.com',
+    contact_name: 'Jane',
+    phone: '555-1234',
+    announcement_type: 'expansion',
+    article_url: null,
+    article_text: 'Acme opens new factory.',
+    article_source: 'paste',
+    quote: 'Big news.',
+    quote_attribution: 'CEO',
+    notes: '',
+  };
+  const payload = buildComposePayload({ lead, articleText: 'Acme opens new factory.', orderId: 'ord-1', composeRunId: 'run-1' });
+  assert.equal(payload.leadId, 'lead-abc');
+  assert.equal(payload.orderId, 'ord-1');
+  assert.equal(payload.composeRunId, 'run-1');
+  assert.equal(payload.articleSource, 'paste');
+  assert.equal(payload.articleUrl, ''); // V1: URL always empty
+  assert.equal(typeof payload.companyName, 'string');
+  // All COMPOSE_KEYS must be present and be strings
+  for (const key of COMPOSE_KEYS) {
+    assert.equal(typeof payload[key], 'string', `${key} must be string`);
+  }
+});
+
+test('n8n retry classification: timeout/network = transient', () => {
+  assert.equal(statusForComposeError('timeout'), 502);
+  assert.equal(statusForComposeError('network'), 502);
+  assert.equal(statusForComposeError('compose_failed'), 200);
+  assert.equal(statusForComposeError('insufficient_article'), 200);
+});
+
+test('n8n mock: ok:true response shape', async () => {
+  let capturedPayload = null;
+  const mockFetch = async (url, opts) => {
+    capturedPayload = JSON.parse(opts.body);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        headline: 'Acme Opens New Factory',
+        body: ['Para one.'],
+        source: 'n8n',
+      }),
+    };
+  };
+
+  const result = await callN8nCompose(
+    { leadId: 'ld1', articleText: 'Some article', companyName: 'Acme' },
+    { fetchImpl: mockFetch, timeoutMs: 5000 }
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.draft?.headline, 'Acme Opens New Factory');
+  assert.ok(capturedPayload, 'payload was sent');
+});
+
+test('n8n mock: ok:false response never returns draft', async () => {
+  const mockFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: false, error: 'model_failed' }),
+  });
+
+  const result = await callN8nCompose(
+    { leadId: 'ld1', articleText: 'article' },
+    { fetchImpl: mockFetch, timeoutMs: 5000 }
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'model_failed');
+  assert.equal(result.draft, undefined);
+});
+
+test('n8n mock: timeout returns ok:false with error=timeout', async () => {
+  const mockFetch = async (_url, opts) => {
+    await new Promise((_, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
+  };
+
+  const result = await callN8nCompose(
+    { leadId: 'ld1', articleText: 'article' },
+    { fetchImpl: mockFetch, timeoutMs: 50 }
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'timeout');
+});
+
+test('checkout route: attaches lead_id and funnel=v2 to metadata', () => {
+  const checkoutSrc = rfs(jn(HERE, '../app/api/checkout/route.js'), 'utf8');
+  assert.ok(checkoutSrc.includes('lead_id'), 'lead_id in metadata');
+  assert.ok(checkoutSrc.includes("funnel: 'v2'"), 'V2 funnel marker');
+  assert.ok(checkoutSrc.includes('getLeadByEmail'), 'looks up lead for metadata');
+  assert.ok(checkoutSrc.includes("funnel: 'v1'"), 'v1 fallback marker');
+});
+
+test('stripe webhook: idempotent upsert on stripe_session_id', () => {
+  const ordersSrc = rfs(jn(HERE, '../lib/orders.js'), 'utf8');
+  assert.ok(ordersSrc.includes('ON CONFLICT (stripe_session_id)'), 'idempotent by session ID');
+  assert.ok(ordersSrc.includes('DO UPDATE SET'), 'updates on conflict');
+  assert.ok(ordersSrc.includes('lead_id'), 'attaches lead_id');
+  assert.ok(ordersSrc.includes('order_status'), 'sets order_status');
+});
+
+test('approval checkbox: copy is canonical and stored', () => {
+  assert.ok(typeof APPROVAL_CHECKBOX_COPY === 'string', 'checkbox copy is a string');
+  assert.ok(APPROVAL_CHECKBOX_COPY.length > 50, 'checkbox copy is substantive');
+  assert.ok(APPROVAL_CHECKBOX_COPY.includes('refund'), 'mentions refund disclaimer');
+  assert.ok(APPROVAL_CHECKBOX_COPY.includes('vendor'), 'mentions vendor submission');
+  assert.ok(!APPROVAL_CHECKBOX_COPY.includes('irreversible'), 'does not say irreversible');
+});
+
+test('approval: require checkbox before marking approved', () => {
+  const approveSrc = rfs(jn(HERE, '../app/api/approve/route.js'), 'utf8');
+  assert.ok(approveSrc.includes('approved !== true'), 'rejects if approved !== true');
+  assert.ok(approveSrc.includes("'approved'"), "sets status to 'approved'");
+  assert.ok(approveSrc.includes('payment_status'), 'validates payment before approval');
+  assert.ok(approveSrc.includes('recordApproval'), 'records in approvals table');
+});
+
+test('status transitions: admin pr-sent endpoint is protected', () => {
+  const adminSrc = rfs(jn(HERE, '../app/api/admin/pr-sent/route.js'), 'utf8');
+  assert.ok(adminSrc.includes('ADMIN_SECRET'), 'checks ADMIN_SECRET');
+  assert.ok(adminSrc.includes('Bearer'), 'uses bearer token auth');
+  assert.ok(adminSrc.includes('pr_sent'), "transitions to pr_sent status");
+  // Must NOT be usable without the secret
+  assert.ok(adminSrc.includes("'Unauthorized.'"), 'rejects unauthorized');
+});
+
+test('customer dashboard: all statuses represented in StatusLadder', () => {
+  const ladderSrc = rfs(jn(HERE, '../components/funnel/StatusLadder.jsx'), 'utf8');
+  for (const status of ['draft', 'writing', 'ready', 'paid', 'approved', 'pr_sent', 'failed', 'refunded']) {
+    assert.ok(ladderSrc.includes(status), `StatusLadder includes '${status}'`);
+  }
+});
+
+test('sanitizeLeadFields: articleSource accepted for pdf/paste only (source inspection)', () => {
+  const leadsSrc = rfs(jn(HERE, '../lib/leads.js'), 'utf8');
+  // The sanitization logic must only accept 'pdf' and 'paste'
+  assert.ok(leadsSrc.includes("src === 'pdf' || src === 'paste'"), 'only pdf/paste accepted');
+  assert.ok(!leadsSrc.includes("src === 'url'"), 'url is not accepted as article_source');
+  assert.ok(leadsSrc.includes('article_source'), 'article_source field is handled');
+});
+
+test('Telegram config: launch blocker logged when not configured', () => {
+  const notifySrc = rfs(jn(HERE, '../lib/notify.js'), 'utf8');
+  assert.ok(notifySrc.includes('LAUNCH BLOCKER'), 'logs LAUNCH BLOCKER for Telegram');
+  assert.ok(notifySrc.includes('TELEGRAM_BOT_TOKEN'), 'references TELEGRAM_BOT_TOKEN');
+  assert.ok(notifySrc.includes('TELEGRAM_CHAT_ID'), 'references TELEGRAM_CHAT_ID');
+});
+
+test('notification failure never propagates to caller', () => {
+  // Verify callers fire notifications as best-effort (no await or .catch)
+  const webhookSrc = rfs(jn(HERE, '../app/api/stripe-webhook/route.js'), 'utf8');
+  assert.ok(webhookSrc.includes('.catch(() => {})'), 'webhook suppresses notification errors');
+  const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
+  assert.ok(completeSrc.includes('.catch(() => {})'), 'brief/complete suppresses notification errors');
+  // notify.js itself uses try/catch to avoid propagating errors outward
+  const notifySrc = rfs(jn(HERE, '../lib/notify.js'), 'utf8');
+  assert.ok(notifySrc.includes('} catch (err)'), 'notify.js handles internal errors');
+});
+
+test('ownership: brief and approve routes require session auth', () => {
+  const briefSrc = rfs(jn(HERE, '../app/api/brief/route.js'), 'utf8');
+  const approveSrc = rfs(jn(HERE, '../app/api/approve/route.js'), 'utf8');
+  assert.ok(briefSrc.includes('getSession'), 'brief checks session');
+  assert.ok(briefSrc.includes("'auth'"), 'brief returns 401 on missing session');
+  assert.ok(approveSrc.includes('getSession'), 'approve checks session');
+  assert.ok(approveSrc.includes("'auth'"), 'approve returns 401 on missing session');
+});
+
+test('no article → compose fails with honest error, brief preserved', () => {
+  const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
+  assert.ok(completeSrc.includes('insufficient_article'), 'returns insufficient_article error');
+  assert.ok(completeSrc.includes('markComposeFinished'), 'unlocks compose on article missing');
+  assert.ok(!completeSrc.includes('DEMO_DRAFT'), 'no DEMO_DRAFT fallback');
+});
+

@@ -33,7 +33,9 @@ export async function PATCH(request) {
   }
 
   const payload = body && typeof body === 'object' ? body : {};
-  // articleFile / logo binary intentionally discarded in this slice.
+  // articleFile / logo binary are handled by dedicated upload endpoints.
+  // Infer article_source from payload if not explicitly set.
+  if (!payload.articleSource && payload.articleText) payload.articleSource = 'paste';
   const saved = await saveLeadFromPayload(session.email, payload);
   if (saved.error === 'database') {
     return NextResponse.json({ error: 'unavailable' }, { status: 503 });
