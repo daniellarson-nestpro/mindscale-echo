@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import FunnelShell from '../../components/funnel/FunnelShell';
 import BriefForm from '../../components/funnel/BriefForm';
 import { getSession } from '../../lib/auth';
+import { initialFromBrief } from '../../lib/brief-shape';
 import { getLeadByEmail, leadToBriefJson } from '../../lib/leads';
 
 export const metadata = {
@@ -10,26 +11,6 @@ export const metadata = {
 };
 
 export const dynamic = 'force-dynamic';
-
-function initialFromBrief(brief) {
-  if (!brief) return {};
-  const sources = [];
-  if (brief.articleUrl) {
-    sources.push({
-      type: 'url',
-      value: brief.articleUrl,
-      display: brief.articleUrl,
-    });
-  } else if (brief.articleText) {
-    sources.push({
-      type: 'text',
-      value: brief.articleText,
-      display: 'Article text',
-      meta: `${brief.articleText.trim().split(/\s+/).length} words`,
-    });
-  }
-  return { ...brief, sources };
-}
 
 export default async function BriefPage() {
   const session = getSession();

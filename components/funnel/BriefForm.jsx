@@ -5,6 +5,11 @@ import { useRouter } from 'next/navigation';
 import ArticleDrop from './ArticleDrop';
 import LogoUpload from './LogoUpload';
 import ComposeWait from './ComposeWait';
+import {
+  briefToFormState,
+  hasResumableBrief,
+  mergeBriefFormState,
+} from '../../lib/brief-shape';
 import { BRIEF, FIELDS, ANNOUNCEMENT_CHIPS } from '../../lib/funnel';
 import { ArrowUpRight } from '../Icons';
 
@@ -21,6 +26,7 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
  */
 export default function BriefForm({ initial = {} }) {
   const router = useRouter();
+  const { sources: initialSources = [], ...initialValues } = initial;
   const [values, setValues] = useState({
     companyName: '',
     website: '',
@@ -31,15 +37,15 @@ export default function BriefForm({ initial = {} }) {
     quote: '',
     quoteAttribution: '',
     notes: '',
-    ...initial,
+    ...initialValues,
   });
-  const [sources, setSources] = useState(initial.sources || []);
+  const [sources, setSources] = useState(initialSources);
   const [logo, setLogo] = useState(null);
   const [save, setSave] = useState('idle'); // idle | saving | failed
   const [errors, setErrors] = useState({});
   const [showNotes, setShowNotes] = useState(Boolean(initial.notes));
   const [composing, setComposing] = useState(false);
-  const [resumed, setResumed] = useState(Boolean(initial.companyName));
+  const [resumed, setResumed] = useState(hasResumableBrief(initial));
   const [active, setActive] = useState('business');
   const debounce = useRef(null);
   const sectionRefs = useRef({});
@@ -49,6 +55,41 @@ export default function BriefForm({ initial = {} }) {
     const t = setTimeout(() => setResumed(false), 4000);
     return () => clearTimeout(t);
   }, [resumed]);
+
+  /** Client resume: GET /api/brief even if SSR `initial` was empty. */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/brief', { method: 'GET', cache: 'no-store' });
+        if (cancelled) return;
+        if (res.status === 401) {
+          router.replace('/start');
+          return;
+        }
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        const brief = data?.brief;
+        if (!hasResumableBrief(brief)) return;
+        const incoming = briefToFormState(brief);
+        setValues((prev) => mergeBriefFormState({ values: prev, sources: [] }, incoming).values);
+        setSources((prev) => mergeBriefFormState({ values: {}, sources: prev }, incoming).sources);
+        if (incoming.values.notes) setShowNotes(true);
+        setResumed(true);
+        const hash = window.location.hash.replace(/^#/, '');
+        if (hash) {
+          requestAnimationFrame(() => {
+            document.getElementById(hash)?.scrollIntoView({ block: 'start' });
+          });
+        }
+      } catch {
+        /* keep SSR initial */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   /** Track which section is in view for the rail. */
   useEffect(() => {
@@ -76,6 +117,10 @@ export default function BriefForm({ initial = {} }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       });
+      if (res.status === 401) {
+        router.replace('/start');
+        return;
+      }
       if (!res.ok) throw new Error('save failed');
       setSave('idle');
     } catch {

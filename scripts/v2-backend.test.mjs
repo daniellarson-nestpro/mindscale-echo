@@ -20,7 +20,7 @@ import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
 import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
-import { briefSavedBody, leadToBriefJson } from '../lib/brief-shape.js';
+import { briefSavedBody, hasResumableBrief, initialFromBrief, leadToBriefJson, mergeBriefFormState, sourcesFromBrief } from '../lib/brief-shape.js';
 import { checkoutSummaryFromBrief, draftFromBrief, hasRealBrief } from '../lib/draft.js';
 import {
   articleSourceFromLead,
@@ -284,6 +284,60 @@ test('PATCH /api/brief response and GET resume shape', () => {
   assert.equal(brief.brief.contactName, 'Dana');
   assert.equal(brief.brief.contactEmail, 'dana@northline.com');
   assert.equal(brief.brief.articleUrl, 'https://localpaper.com/story');
+});
+
+test('brief form resume maps saved fields including article sources', () => {
+  const brief = {
+    companyName: 'Northline',
+    website: 'northline.com',
+    contactName: 'Dana',
+    contactEmail: 'dana@northline.com',
+    phone: '555-123-4567',
+    announcementType: 'Grand opening',
+    articleUrl: 'https://localpaper.com/story',
+    articleText: 'The shop opened downtown.',
+    quote: 'We opened.',
+    quoteAttribution: 'Dana, Owner',
+    notes: 'Family-run.',
+  };
+  const initial = initialFromBrief(brief);
+  assert.equal(initial.companyName, 'Northline');
+  assert.equal(initial.announcementType, 'Grand opening');
+  assert.equal(initial.sources.length, 2);
+  assert.equal(initial.sources[0].type, 'url');
+  assert.equal(initial.sources[0].value, 'https://localpaper.com/story');
+  assert.equal(initial.sources[1].type, 'text');
+  assert.equal(hasResumableBrief(brief), true);
+  assert.equal(hasResumableBrief(null), false);
+  assert.equal(hasResumableBrief({ articleUrl: 'https://localpaper.com/story' }), true);
+
+  const merged = mergeBriefFormState(
+    { values: { companyName: '', notes: '' }, sources: [] },
+    { values: { companyName: 'Northline', notes: 'Family-run.' }, sources: sourcesFromBrief(brief) }
+  );
+  assert.equal(merged.values.companyName, 'Northline');
+  assert.equal(merged.sources.length, 2);
+  assert.deepEqual(initialFromBrief(null), {});
+});
+
+test('Change something stays on V2 /brief#news; GET 401 goes to /start', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const previewSrc = readFileSync(join(here, '../components/funnel/PreviewScreen.jsx'), 'utf8');
+  const briefSrc = readFileSync(join(here, '../components/funnel/BriefForm.jsx'), 'utf8');
+  const briefRoute = readFileSync(join(here, '../app/api/brief/route.js'), 'utf8');
+  const funnelSrc = readFileSync(join(here, '../lib/funnel.js'), 'utf8');
+  assert.equal(previewSrc.includes("href={BRIEF_EDIT_HREF}"), true);
+  assert.equal(previewSrc.includes('/login'), false);
+  assert.equal(previewSrc.includes('/success'), false);
+  assert.equal(previewSrc.includes('OnboardingForm'), false);
+  assert.equal(funnelSrc.includes("BRIEF_EDIT_HREF = '/brief#news'"), true);
+  assert.equal(briefSrc.includes("fetch('/api/brief'"), true);
+  assert.equal(briefSrc.includes("router.replace('/start')"), true);
+  assert.equal(briefSrc.includes("router.replace('/login')"), false);
+  assert.equal(briefSrc.includes('BRIEF.resume'), true);
+  assert.equal(briefSrc.includes('OnboardingForm'), false);
+  assert.equal(briefRoute.includes("status: 401"), true);
+  assert.equal(briefRoute.includes("{ brief: null }"), true);
 });
 
 test('verification email copy is six digits with no dash', () => {

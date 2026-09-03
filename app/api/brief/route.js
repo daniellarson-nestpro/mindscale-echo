@@ -14,6 +14,7 @@ export const dynamic = 'force-dynamic';
 /**
  * Hyperagent alias of PATCH /api/onboarding (lead autosave).
  * GET resumes the authenticated lead as { brief } or { brief: null }.
+ * No session → 401 so the V2 funnel can send them to /start, not V1 /login.
  */
 export async function PATCH(request) {
   const session = getSession();
@@ -42,8 +43,11 @@ export async function PATCH(request) {
 
 export async function GET() {
   const session = getSession();
-  if (!session?.email || !isDatabaseConfigured()) {
-    return NextResponse.json({ brief: null });
+  if (!session?.email) {
+    return NextResponse.json({ error: 'auth' }, { status: 401 });
+  }
+  if (!isDatabaseConfigured()) {
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
   }
   try {
     const lead = await getLeadByEmail(session.email);

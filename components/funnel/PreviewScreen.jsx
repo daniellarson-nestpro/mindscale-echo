@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { PREVIEW, nextSendDay } from '../../lib/draft';
+import { BRIEF_EDIT_HREF } from '../../lib/funnel';
 import { ArrowUpRight, ArrowRight, Check, Shield } from '../Icons';
 
 /**
@@ -138,16 +140,12 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
               {PREVIEW.primarySub(price, day)}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => router.push('/brief#news')}
-            className="btn btn-ghost w-full justify-between sm:w-auto"
-          >
+          <Link href={BRIEF_EDIT_HREF} className="btn btn-ghost w-full justify-between sm:w-auto">
             {PREVIEW.secondary}
             <span className="btn-nib">
               <ArrowUpRight />
             </span>
-          </button>
+          </Link>
         </div>
 
         {/* Replaces Print — the job Print was actually doing is "show my
