@@ -99,6 +99,8 @@ Inverted-funnel screens (`/start`, `/start/verify`, `/brief`, `/preview`, `/chec
 
 Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` stays NOT NULL UNIQUE and paid-only. After a paid checkout, a complete lead brief is copied onto that order when the order has none yet.
 
+`POST /api/brief/complete` is the only n8n call. The browser POSTs that route (ComposeWait); it never talks to n8n. n8n does not email the customer. HTTP 200 from n8n can still mean `ok: false` — Echo branches on `ok`. Timeout / network is 502 `{ ok: false, error }`; the brief stays in progress. A saved compose JSON is reused (one paid run per lead).
+
 | Endpoint | Purpose |
 | -------- | ------- |
 | `POST /api/auth/start` | Email-only gate. Upserts a lead, issues **one** magic_links row (long token + hashed 6-digit code, 20 min). Always `{ ok: true, email, sent: true }` — never the code, never whether the email existed. Optional `prefill` and `context` (`articleUrl`, `articleText`, `announcementType`, `companyName`, `quote`) are stored on the lead before verify. `resend: false` attaches wait-filler fields without burning a live code. |
@@ -110,6 +112,7 @@ Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` st
 | `POST /api/articles/resolve` | Ungated article scrape. Rate-limited (IP + optional email). SSRF-blocked. Weak parse still `{ ok: true, title: null, warning: "unparsed" }`. |
 | `POST /api/article/resolve` | Hyperagent alias. Same scrape. Response `{ url, headline, outlet, date, partial }`. Garbage URL: 400 `{ error }`. Weak fetch/parse: `partial: true`. |
 | `PATCH /api/brief` + `GET /api/brief` | Hyperagent alias of lead autosave / resume. PATCH → `{ saved: true }`. GET → `{ brief }` or `{ brief: null }`. |
+| `POST /api/brief/complete` | Session required. Loads the lead, scrapes `articleUrl` if `articleText` is empty, POSTs n8n `/webhook/press-release` (never `/webhook-test/`). On `ok: true`, saves compose JSON on the lead and returns `{ ok: true, token }`. On `ok: false` / timeout, `{ ok: false, error }` and furthest step stays in progress. Existing draft or in-flight compose is reused. |
 | `POST /api/prefill` + `GET /api/prefill` | Signed httpOnly cookie (10 min, `AUTH_SECRET`). Query-style fields: `email`, `companyName`, `articleUrl`, `quote`, `contactName`, `phone`. Does **not** create an account. Frontend should `history.replaceState` the URL clean. Verify merges the cookie into the lead and clears it. |
 | `PATCH /api/onboarding` | Authenticated JSON autosave onto the lead. Same camelCase names as today’s POST. `articleFile` is ignored (storage is a later PR). `POST /api/onboarding` still attaches a brief to a **paid** order. |
 
@@ -209,6 +212,8 @@ No extra env vars. Reuses `RESEND_API_KEY` and `EMAIL_FROM`.
 | `RESEND_API_KEY`         | Yes (prod email) | Resend API key for purchase confirmation and magic-link email.      |
 | `EMAIL_FROM`             | Yes (prod email) | Verified from-address, e.g. `Mindscale Echo <hello@domain.com>`.    |
 | `ONBOARDING_WEBHOOK_URL` | Optional | Extra JSON POST of every saved brief (Zapier / Make / etc.).           |
+| `N8N_WEBHOOK_URL`        | Optional | n8n compose webhook. Defaults to `https://nestpro.app.n8n.cloud/webhook/press-release`. |
+| `N8N_WEBHOOK_SECRET`     | Optional | Sent as `X-API-Key` on the n8n POST. n8n may not check it yet.         |
 
 No secret is ever hardcoded, and `.env` / `.env.local` are gitignored.
 
@@ -314,6 +319,7 @@ app/
   api/articles/resolve/route.js  Ungated article scrape (v1 field names)
   api/article/resolve/route.js   Same scrape, Hyperagent field names
   api/brief/route.js         Lead autosave / resume (Hyperagent alias)
+  api/brief/complete/route.js  Server-side n8n compose; returns `{ ok, token }`
   api/account/route.js       Workspace JSON (lead + orders + ladder)
   api/onboarding/route.js    POST paid brief / PATCH lead autosave
 components/
@@ -337,6 +343,7 @@ lib/
   leads.js                   Unpurchased briefs + furthest step
   prefill.js                 Signed 10-minute outbound cookie
   scrape.js / ssrf.js        Article fetch with timeouts, size cap, SSRF checks
+  n8n.js / compose.js        Server-only webhook client + compose JSON mapping
   release-status.js          Paid / Brief received vs placeholder steps
 sql/
   schema.sql                 orders + magic_links + leads

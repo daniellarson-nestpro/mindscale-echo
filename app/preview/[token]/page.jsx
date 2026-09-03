@@ -11,8 +11,6 @@ export const metadata = {
 export const dynamic = 'force-dynamic';
 
 export default async function PreviewPage({ params }) {
-  // HOOK: when GET /api/brief has a draft_body, prefer that. Until then
-  // draftFromBrief maps the lead. Do not call n8n.
   const draft = await loadPreviewDraft(params?.token);
 
   return (

@@ -72,4 +72,9 @@ CREATE TABLE IF NOT EXISTS leads (
   verified_at TIMESTAMPTZ
 );
 
+-- n8n compose: saved draft JSON + in-flight lock. Additive; upsertLead does not touch these.
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS compose_json TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS compose_started_at TIMESTAMPTZ;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS compose_finished_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS leads_email_idx ON leads (email);

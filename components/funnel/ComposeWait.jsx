@@ -31,7 +31,7 @@ export default function ComposeWait({ onDone, onCancel }) {
         const res = await fetch('/api/brief/complete', { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         if (cancelled) return;
-        if (!res.ok) throw new Error(data.error || 'compose failed');
+        if (!res.ok || data.ok !== true) throw new Error(data.error || 'compose failed');
         onDone?.(data.token);
       } catch {
         if (!cancelled) setFailed(true);

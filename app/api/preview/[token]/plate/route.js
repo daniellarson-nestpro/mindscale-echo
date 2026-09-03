@@ -46,8 +46,7 @@ function wrap(text, max) {
 }
 
 export async function GET(_request, { params }) {
-  // HOOK: load draft_body when the composer exists. Until then the lead
-  // maps through draftFromBrief. Do not call n8n or a headless PNG renderer.
+  // Saved n8n compose JSON via loadPreviewDraft; no n8n call and no PNG renderer.
   const d = await loadPreviewDraft(params?.token);
 
   const W = 900;
@@ -105,7 +104,8 @@ export async function GET(_request, { params }) {
   y += 26;
 
   // Dateline runs into the first paragraph, AP style.
-  const first = `${d.dateline} — ${d.bodyParagraphs[0]}`;
+  const firstPara = Array.isArray(d.bodyParagraphs) ? d.bodyParagraphs[0] || '' : '';
+  const first = `${d.dateline} — ${firstPara}`;
   wrap(first, COL).forEach((line, i) => {
     const bold = i === 0;
     out.push(
@@ -117,7 +117,7 @@ export async function GET(_request, { params }) {
   });
 
   y += 14;
-  d.bodyParagraphs.slice(1).forEach((p) => {
+  (Array.isArray(d.bodyParagraphs) ? d.bodyParagraphs.slice(1) : []).forEach((p) => {
     wrap(p, COL).forEach((line) => {
       out.push(
         `<text x="${PAD}" y="${y}" font-family="Georgia, serif" font-size="15" fill="#111">${esc(

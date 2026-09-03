@@ -17,11 +17,31 @@ import {
 import { inferStepFromLead, ladderState, pathForStep, resolveFurthestStep } from '../lib/progress.js';
 import { createRateLimiter } from '../lib/rate-limit.js';
 import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
-import { parseArticleHtml } from '../lib/article-html.js';
+import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
 import { briefSavedBody, leadToBriefJson } from '../lib/brief-shape.js';
 import { checkoutSummaryFromBrief, draftFromBrief, hasRealBrief } from '../lib/draft.js';
+import {
+  articleSourceFromLead,
+  buildComposePayload,
+  COMPOSE_KEYS,
+  composeJsonToDraft,
+  hasSavedCompose,
+  isComposeInFlight,
+  normalizeComposeResponse,
+  parseComposeJson,
+  previewTokenFor,
+  resolveArticleText,
+  statusForComposeError,
+  waitForExistingCompose,
+} from '../lib/compose.js';
+import {
+  callN8nCompose,
+  DEFAULT_N8N_WEBHOOK_URL,
+  n8nRequestHeaders,
+  n8nWebhookUrl,
+} from '../lib/n8n.js';
 import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../lib/url.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -362,4 +382,305 @@ test('weak HTML parse still returns a payload', () => {
   assert.equal(rich.outlet, 'Daily Gazette');
   assert.equal(rich.date, '2026-04-01');
   assert.equal(rich.byline, 'Lee Parks');
+});
+
+test('extractArticleText returns visible body, not markup', () => {
+  const text = extractArticleText(`
+    <html><body>
+      <script>window.evil=1</script>
+      <article>
+        <h1>Shop opens downtown</h1>
+        <p>Neighbors showed up.</p>
+        <p>The owner cut the ribbon.</p>
+      </article>
+    </body></html>
+  `);
+  assert.match(text, /Shop opens downtown/);
+  assert.match(text, /Neighbors showed up/);
+  assert.equal(text.includes('<p>'), false);
+  assert.equal(text.includes('window.evil'), false);
+});
+
+test('saved compose JSON wins over draftFromBrief', () => {
+  const now = new Date('2026-09-03T12:00:00Z');
+  const brief = {
+    companyName: 'Northline',
+    website: 'northline.com',
+    contactName: 'Dana',
+    contactEmail: 'dana@northline.com',
+    phone: '555-123-4567',
+    announcementType: 'Grand opening',
+    articleText: 'The shop opened downtown.',
+    quote: 'We opened.',
+    quoteAttribution: 'Dana, Owner',
+  };
+  const fallback = draftFromBrief(brief, now);
+  const saved = {
+    ok: true,
+    headline: 'Northline opens downtown',
+    subhead: 'A real subhead',
+    dateline: 'COLUMBUS, OH — September 3, 2026',
+    body: ['Composed paragraph one.', 'Composed paragraph two.'],
+    quote: 'Composed quote.',
+    quoteAttribution: 'Dana, Owner',
+    boilerplate: 'About Northline.',
+    contactLine: 'Dana · dana@northline.com',
+    error: '',
+  };
+  const draft = composeJsonToDraft(saved, brief, now);
+  assert.equal(draft.headline, 'Northline opens downtown');
+  assert.equal(draft.subhead, 'A real subhead');
+  assert.deepEqual(draft.bodyParagraphs, ['Composed paragraph one.', 'Composed paragraph two.']);
+  assert.equal(draft.companyName, 'Northline');
+  assert.equal(draft.contactEmail, 'dana@northline.com');
+  assert.notEqual(draft.headline, fallback.headline);
+  assert.equal(JSON.stringify(draft).toLowerCase().includes('sal'), false);
+  assert.equal(parseComposeJson(JSON.stringify(saved)).headline, 'Northline opens downtown');
+  assert.equal(parseComposeJson('{"ok":false}'), null);
+  assert.equal(hasSavedCompose({ compose_json: JSON.stringify(saved) }), true);
+  assert.equal(hasSavedCompose({ compose_json: null }), false);
+});
+
+test('compose payload always includes every key; empty string if unused', () => {
+  const payload = buildComposePayload({
+    lead: {
+      id: 'lead-1',
+      company_name: 'Northline',
+      email: 'dana@northline.com',
+      article_url: 'https://localpaper.com/story',
+    },
+    articleText: 'Neighbors showed up.',
+    orderId: '',
+  });
+  assert.deepEqual(Object.keys(payload).sort(), [...COMPOSE_KEYS].sort());
+  for (const key of COMPOSE_KEYS) {
+    assert.equal(typeof payload[key], 'string');
+  }
+  assert.equal(payload.companyName, 'Northline');
+  assert.equal(payload.articleText, 'Neighbors showed up.');
+  assert.equal(payload.articleSource, 'url');
+  assert.equal(payload.phone, '');
+  assert.equal(payload.orderId, '');
+  assert.equal(payload.leadId, 'lead-1');
+  assert.equal(articleSourceFromLead({ article_text: 'pasted' }), 'paste');
+  assert.equal(previewTokenFor({ id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }), 'a1b2c3d4-e5f6-7890-abcd-ef1234567890');
+});
+
+test('articleText falls back to scrape, then notes/quote', async () => {
+  const scraped = await resolveArticleText({
+    articleText: '',
+    articleUrl: 'https://localpaper.com/story',
+    notes: 'ignored if scrape works',
+    quote: 'ignored',
+    scrape: async () => ({ text: 'Scraped body from the URL.' }),
+  });
+  assert.equal(scraped.articleText, 'Scraped body from the URL.');
+  assert.equal(scraped.scraped, true);
+
+  const fromNotes = await resolveArticleText({
+    articleText: '',
+    articleUrl: 'https://localpaper.com/story',
+    notes: 'Family-run.',
+    quote: 'We opened.',
+    scrape: async () => ({ text: '' }),
+  });
+  assert.equal(fromNotes.articleText, 'Family-run.\n\nWe opened.');
+  assert.equal(fromNotes.scraped, false);
+
+  const existing = await resolveArticleText({
+    articleText: 'Pasted article.',
+    articleUrl: 'https://localpaper.com/story',
+    scrape: async () => {
+      throw new Error('should not scrape when text exists');
+    },
+  });
+  assert.equal(existing.articleText, 'Pasted article.');
+});
+
+test('n8n webhook url never uses webhook-test and defaults when unset', () => {
+  const prevUrl = process.env.N8N_WEBHOOK_URL;
+  const prevSecret = process.env.N8N_WEBHOOK_SECRET;
+  try {
+    delete process.env.N8N_WEBHOOK_URL;
+    assert.equal(n8nWebhookUrl(), DEFAULT_N8N_WEBHOOK_URL);
+    assert.equal(DEFAULT_N8N_WEBHOOK_URL.includes('webhook-test'), false);
+    assert.match(DEFAULT_N8N_WEBHOOK_URL, /\/webhook\/press-release$/);
+    assert.equal(
+      n8nWebhookUrl('https://nestpro.app.n8n.cloud/webhook-test/press-release'),
+      'https://nestpro.app.n8n.cloud/webhook/press-release'
+    );
+    assert.equal(n8nRequestHeaders('').hasOwnProperty('X-API-Key'), false);
+    assert.equal(n8nRequestHeaders('secret-key')['X-API-Key'], 'secret-key');
+  } finally {
+    if (prevUrl === undefined) delete process.env.N8N_WEBHOOK_URL;
+    else process.env.N8N_WEBHOOK_URL = prevUrl;
+    if (prevSecret === undefined) delete process.env.N8N_WEBHOOK_SECRET;
+    else process.env.N8N_WEBHOOK_SECRET = prevSecret;
+  }
+});
+
+test('n8n compose branches on ok, not HTTP status', async () => {
+  const prevSecret = process.env.N8N_WEBHOOK_SECRET;
+  process.env.N8N_WEBHOOK_SECRET = 'test-n8n-secret';
+  try {
+    let captured;
+    const okFetch = async (url, opts) => {
+      captured = { url, opts };
+      return {
+        status: 200,
+        json: async () => ({
+          ok: true,
+          headline: 'Northline opens',
+          subhead: '',
+          dateline: 'COLUMBUS, OH — September 3, 2026',
+          body: ['Para one.'],
+          quote: 'We opened.',
+          quoteAttribution: 'Dana',
+          boilerplate: 'Northline is a shop.',
+          contactLine: 'Dana, dana@northline.com',
+          error: '',
+        }),
+      };
+    };
+    const ok = await callN8nCompose(
+      { companyName: 'Northline' },
+      { fetchImpl: okFetch, url: DEFAULT_N8N_WEBHOOK_URL, secret: 'test-n8n-secret' }
+    );
+    assert.equal(ok.ok, true);
+    assert.equal(ok.draft.headline, 'Northline opens');
+    assert.equal(captured.url, DEFAULT_N8N_WEBHOOK_URL);
+    assert.equal(captured.opts.method, 'POST');
+    assert.equal(captured.opts.headers['X-API-Key'], 'test-n8n-secret');
+    assert.equal(JSON.parse(captured.opts.body).companyName, 'Northline');
+
+    const falseOk = await callN8nCompose(
+      { companyName: 'Northline' },
+      {
+        fetchImpl: async () => ({
+          status: 200,
+          json: async () => ({ ok: false, error: 'model_failed' }),
+        }),
+      }
+    );
+    assert.equal(falseOk.ok, false);
+    assert.equal(falseOk.error, 'model_failed');
+    assert.equal(statusForComposeError(falseOk.error), 200);
+
+    const timeout = await callN8nCompose(
+      { companyName: 'Northline' },
+      {
+        timeoutMs: 20,
+        fetchImpl: (_url, opts) =>
+          new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => {
+              const err = new Error('aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }),
+      }
+    );
+    assert.equal(timeout.ok, false);
+    assert.equal(timeout.error, 'timeout');
+    assert.equal(statusForComposeError('timeout'), 502);
+    assert.equal(statusForComposeError('network'), 502);
+  } finally {
+    if (prevSecret === undefined) delete process.env.N8N_WEBHOOK_SECRET;
+    else process.env.N8N_WEBHOOK_SECRET = prevSecret;
+  }
+});
+
+test('in-flight compose is reused; saved draft short-circuits', async () => {
+  const now = Date.parse('2026-09-03T12:00:00Z');
+  const running = {
+    id: 'lead-1',
+    compose_json: null,
+    compose_started_at: new Date(now - 1000).toISOString(),
+    compose_finished_at: null,
+  };
+  assert.equal(isComposeInFlight(running, now), true);
+  assert.equal(isComposeInFlight({ ...running, compose_finished_at: new Date(now).toISOString() }, now), false);
+  assert.equal(
+    isComposeInFlight(
+      { ...running, compose_json: JSON.stringify({ ok: true, headline: 'Done', body: [] }) },
+      now
+    ),
+    false
+  );
+
+  const savedLead = {
+    id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    compose_json: JSON.stringify({ ok: true, headline: 'Done', body: ['Hi'] }),
+  };
+  const waitedSaved = await waitForExistingCompose('lead-1', {
+    getLead: async () => savedLead,
+    timeoutMs: 50,
+    intervalMs: 10,
+  });
+  assert.equal(waitedSaved.ok, true);
+  assert.equal(waitedSaved.token, savedLead.id);
+
+  let polls = 0;
+  const waitedFail = await waitForExistingCompose('lead-1', {
+    getLead: async () => {
+      polls += 1;
+      return {
+        id: 'lead-1',
+        compose_json: null,
+        compose_started_at: new Date().toISOString(),
+        compose_finished_at: polls > 1 ? new Date().toISOString() : null,
+      };
+    },
+    sleep: async () => {},
+    timeoutMs: 5_000,
+    intervalMs: 1,
+    now: () => Date.now(),
+  });
+  assert.equal(waitedFail.ok, false);
+  assert.equal(waitedFail.status, 200);
+});
+
+test('compose_json marks the ladder draft-ready and preview furthest', () => {
+  const withDraft = {
+    company_name: 'Acme',
+    announcement_type: 'launch',
+    compose_json: JSON.stringify({ ok: true, headline: 'Acme opens', body: ['Hi'] }),
+  };
+  assert.equal(inferStepFromLead(withDraft), 'preview');
+  assert.equal(ladderState(withDraft, []), 'draft_ready_unpurchased');
+  assert.equal(resolveFurthestStep({ ...withDraft, furthest_step: 'preview' }, []), 'preview');
+});
+
+test('normalizeComposeResponse keeps the n8n field set', () => {
+  const normalized = normalizeComposeResponse({
+    ok: true,
+    headline: '  Northline opens  ',
+    body: ['Para one.', '', 'Para two.'],
+    quote: 'We opened.',
+  });
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.headline, 'Northline opens');
+  assert.deepEqual(normalized.body, ['Para one.', 'Para two.']);
+  assert.equal(normalized.subhead, '');
+  assert.equal(normalized.error, '');
+  assert.equal(normalized.contactLine, '');
+});
+
+test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const completeSrc = readFileSync(join(here, '../app/api/brief/complete/route.js'), 'utf8');
+  const waitSrc = readFileSync(join(here, '../components/funnel/ComposeWait.jsx'), 'utf8');
+  const previewSrc = readFileSync(join(here, '../lib/preview-draft.js'), 'utf8');
+  const plateSrc = readFileSync(join(here, '../app/api/preview/[token]/plate/route.js'), 'utf8');
+  assert.equal(completeSrc.includes('callN8nCompose'), true);
+  assert.equal(completeSrc.includes('maxDuration'), true);
+  assert.equal(completeSrc.includes('webhook-test'), false);
+  assert.equal(completeSrc.includes('sendVerification'), false);
+  assert.equal(completeSrc.includes('resend'), false);
+  assert.equal(waitSrc.includes('n8n.cloud'), false);
+  assert.equal(waitSrc.includes('/api/brief/complete'), true);
+  assert.equal(waitSrc.includes('data.ok !== true'), true);
+  assert.equal(previewSrc.includes('composeJsonToDraft'), true);
+  assert.equal(previewSrc.includes('parseComposeJson'), true);
+  assert.equal(plateSrc.includes('loadPreviewDraft'), true);
 });
