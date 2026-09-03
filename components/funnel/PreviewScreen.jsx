@@ -126,7 +126,9 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
           <div>
             <button
               type="button"
-              onClick={() => router.push('/checkout')}
+              onClick={() =>
+                router.push(`/checkout?token=${encodeURIComponent(token || 'demo')}`)
+              }
               className="btn btn-primary w-full justify-between sm:w-auto"
             >
               {PREVIEW.primary}

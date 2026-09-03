@@ -4,18 +4,26 @@ import { useEffect, useState } from 'react';
 import CheckoutButton from '../CheckoutButton';
 import { PLANS } from '../../lib/plans';
 import { CHECKOUT, nextSendDay } from '../../lib/draft';
+import { looksLikeEmail, safePreviewToken } from '../../lib/url';
 import { Check, Lock, ArrowUpRight } from '../Icons';
 
 /**
  * Mirrors the landing page pricing deliberately — same cards, same language,
  * same CheckoutButton hitting the same POST /api/checkout. No new Stripe UI.
  *
+ * Identity (email + preview token) is passed through so Stripe can stamp it
+ * on the session. Brief/composer are still stubs on this branch: token
+ * defaults to `demo`, and email is whatever the query string or a session
+ * probe returns — not a saved brief.
+ *
  * The purchase is always framed as *sending it out*. Never "unlock the PDF":
  * at this price the product is distribution and the PDF is an inclusion.
  */
-export default function CheckoutScreen({ summary }) {
+export default function CheckoutScreen({ summary, token: tokenProp, email: emailProp }) {
   const plans = [PLANS.basic, PLANS.premium];
   const [returning, setReturning] = useState(false);
+  const [email, setEmail] = useState(() => looksLikeEmail(emailProp) || '');
+  const token = safePreviewToken(tokenProp);
   const day = nextSendDay();
 
   /** Second arrival without a purchase promotes the booker. */
@@ -28,6 +36,48 @@ export default function CheckoutScreen({ summary }) {
       /* private mode — no promotion, no harm */
     }
   }, []);
+
+  /**
+   * Prefill Stripe customer_email. Query string first (stripped so it doesn't
+   * sit in a shared-iPad address bar), then stub session endpoints.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = looksLikeEmail(params.get('email'));
+    if (fromQuery) {
+      setEmail(fromQuery);
+      params.delete('email');
+      const qs = params.toString();
+      window.history.replaceState(
+        {},
+        '',
+        qs ? `${window.location.pathname}?${qs}` : window.location.pathname,
+      );
+      return undefined;
+    }
+    if (looksLikeEmail(emailProp)) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      for (const url of ['/api/auth/me', '/api/session/status']) {
+        try {
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) continue;
+          const data = await res.json();
+          const candidate = looksLikeEmail(data.email) || looksLikeEmail(data.user?.email);
+          if (candidate && !cancelled) {
+            setEmail(candidate);
+            return;
+          }
+        } catch {
+          /* stub or missing route */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [emailProp]);
 
   return (
     <>
@@ -112,6 +162,9 @@ export default function CheckoutScreen({ summary }) {
                     label={`Send it out — ${plan.priceLabel}`}
                     variant={featured ? 'primary' : 'ghost'}
                     className="mt-8"
+                    next="/account?paid=1"
+                    token={token}
+                    email={email || undefined}
                   />
                   <p className="mt-2.5 text-center font-mono text-[10px] uppercase tracking-eyebrow text-white/30">
                     Goes out {day} morning
