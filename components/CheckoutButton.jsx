@@ -7,7 +7,7 @@ import { ArrowUpRight } from './Icons';
  * Posts to /api/checkout, which creates a Stripe Checkout Session server-side
  * (secret key never reaches the browser) and returns the redirect URL.
  */
-export default function CheckoutButton({ plan, label, variant = 'primary', className = '' }) {
+export default function CheckoutButton({ plan, label, variant = 'primary', className = '', next }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -18,7 +18,7 @@ export default function CheckoutButton({ plan, label, variant = 'primary', class
       const res = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan }),
+        body: JSON.stringify({ plan, next }),
       });
       const data = await res.json();
       if (!res.ok || !data.url) {

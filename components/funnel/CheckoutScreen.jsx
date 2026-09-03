@@ -112,6 +112,7 @@ export default function CheckoutScreen({ summary }) {
                     label={`Send it out — ${plan.priceLabel}`}
                     variant={featured ? 'primary' : 'ghost'}
                     className="mt-8"
+                    next="/account?paid=1"
                   />
                   <p className="mt-2.5 text-center font-mono text-[10px] uppercase tracking-eyebrow text-white/30">
                     Goes out {day} morning
