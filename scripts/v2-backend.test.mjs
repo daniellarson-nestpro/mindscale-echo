@@ -21,6 +21,10 @@ import { parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
 import { briefSavedBody, leadToBriefJson } from '../lib/brief-shape.js';
+import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../lib/url.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 const SECRET = 'test-auth-secret';
 
@@ -259,6 +263,42 @@ test('PATCH /api/brief response and GET resume shape', () => {
   assert.equal(brief.brief.contactName, 'Dana');
   assert.equal(brief.brief.contactEmail, 'dana@northline.com');
   assert.equal(brief.brief.articleUrl, 'https://localpaper.com/story');
+});
+
+test('checkout next/email/token guards reject open redirects', () => {
+  assert.equal(safeRelativePath('/account?paid=1'), '/account?paid=1');
+  assert.equal(safeRelativePath('//evil.com'), null);
+  assert.equal(safeRelativePath('https://evil.example'), null);
+  assert.equal(looksLikeEmail('dana@northline.com'), 'dana@northline.com');
+  assert.equal(looksLikeEmail('not-an-email'), null);
+  assert.equal(safePreviewToken('abc_12'), 'abc_12');
+  assert.equal(safePreviewToken('../x'), 'demo');
+  const next = appendCheckoutParams('/account?paid=1', { planId: 'premium', token: 'demo' });
+  assert.match(next, /session_id=\{CHECKOUT_SESSION_ID\}/);
+  assert.match(next, /plan=premium/);
+  assert.match(next, /token=demo/);
+  assert.match(next, /^\/account\?paid=1&/);
+});
+
+test('verify route has no stub codes — 000000 is just invalid', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const verifySrc = readFileSync(join(here, '../app/api/auth/verify/route.js'), 'utf8');
+  const startSrc = readFileSync(join(here, '../app/api/auth/start/route.js'), 'utf8');
+  assert.equal(verifySrc.includes('111111'), false);
+  assert.equal(verifySrc.includes('STUB'), false);
+  assert.equal(startSrc.includes('STUB'), false);
+  assert.equal(verifySrc.includes('any 6 digits'), false);
+  const hash = hashCode('483201', SECRET);
+  assert.deepEqual(evaluateCodeAttempt({
+    row: {
+      code_hash: hash,
+      used_at: null,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      attempts: 0,
+    },
+    code: '000000',
+    secret: SECRET,
+  }), { ok: false, error: 'invalid' });
 });
 
 test('weak HTML parse still returns a payload', () => {

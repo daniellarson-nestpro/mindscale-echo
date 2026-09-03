@@ -27,6 +27,7 @@ async function verifiedPayload(email, nextPath) {
     verified: true,
     furthestStep: progress.furthestStep,
     redirectTo: nextPath || pathForStep(progress.furthestStep),
+    email,
   };
 }
 

@@ -46,7 +46,9 @@ function wrap(text, max) {
 }
 
 export async function GET() {
-  // HOOK: load the real draft for `params.token` once the composer is wired.
+  // HOOK: load the real draft for `params.token` once GET /api/brief has a
+  // draft_body. Until then keep this SVG plate. Do not call n8n or a
+  // headless PNG renderer from here (no production auth).
   const d = DEMO_DRAFT;
 
   const W = 900;

@@ -93,7 +93,9 @@ Auth never lists another customer’s orders — queries are scoped to the signe
 
 ## V2 auth / leads APIs (backend slice)
 
-Inverted-funnel screens (`/start`, `/start/verify`, `/brief`, `/preview`) are a separate frontend stream. This slice ships the APIs those screens can call. No new env vars — reuse `AUTH_SECRET`, `RESEND_API_KEY`, `EMAIL_FROM`, and Postgres.
+Inverted-funnel screens (`/start`, `/start/verify`, `/brief`, `/preview`, `/checkout`) call these APIs. Stub login (`000000` / `111111` / any six digits) is gone. No new env vars — reuse `AUTH_SECRET`, `RESEND_API_KEY`, `EMAIL_FROM`, and Postgres.
+
+**Preview deploys** need `AUTH_SECRET`, `RESEND_API_KEY`, and `EMAIL_FROM` set (they are Production-only today). Without them, `POST /api/auth/start` returns 503 and the code email cannot send.
 
 Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` stays NOT NULL UNIQUE and paid-only. After a paid checkout, a complete lead brief is copied onto that order when the order has none yet.
 
@@ -213,8 +215,9 @@ No secret is ever hardcoded, and `.env` / `.env.local` are gitignored.
 ### Create the dashboard resources (Daniel)
 
 These cannot be invented in git. After they exist, paste the names above into Vercel →
-Project **mindscale-echo** → Settings → Environment Variables (Production + Preview),
-then redeploy.
+Project **mindscale-echo** → Settings → Environment Variables. Copy
+`AUTH_SECRET`, `RESEND_API_KEY`, and `EMAIL_FROM` onto Preview as well as
+Production — V2 `/start` will 503 on Preview until those exist — then redeploy.
 
 **1. Postgres (Neon / Vercel Storage)**
 

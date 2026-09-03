@@ -4,7 +4,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * STUB — triggers the pre-payment compose.
+ * STUB — triggers the pre-payment compose. Do not call n8n from here
+ * (no production auth on that path). HOOK only until a draft_body exists
+ * on GET /api/brief.
  *
  * Real behavior: cheap model, single pass, store `draft_body` as markdown or
  * plain text. NO letterhead HTML and no PDF at this stage — the letterhead

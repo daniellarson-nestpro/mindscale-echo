@@ -33,8 +33,8 @@ export default function StartFlow() {
    * their email address should not sit in the address bar of a shared iPad
    * behind the register. No account is created from params alone.
    *
-   * HOOK: the backend also stashes these in a signed, httpOnly, 10-minute
-   * cookie. When that lands, read from it instead of holding them here.
+   * Outbound params are also written to POST /api/prefill (signed 10-minute
+   * cookie). Verify merges that cookie onto the lead.
    */
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -51,6 +51,16 @@ export default function StartFlow() {
       resolveUrl(picked.articleUrl);
     }
     setPrefill(picked);
+
+    if (Object.keys(picked).length) {
+      fetch('/api/prefill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(picked),
+      }).catch(() => {
+        /* cookie is optional — context still travels with /api/auth/start */
+      });
+    }
 
     window.history.replaceState({}, '', window.location.pathname);
   }, []);

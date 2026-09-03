@@ -12,7 +12,8 @@ export const dynamic = 'force-dynamic';
 
 export default function PreviewPage({ params }) {
   // HOOK: load draft_body + brief fields for params.token. DEMO_DRAFT stands
-  // in until the composer is wired; the shape is identical.
+  // in while GET /api/brief has no draft_body. Do not call n8n from this
+  // route (no production auth). The shape is identical.
   const draft = DEMO_DRAFT;
 
   return (

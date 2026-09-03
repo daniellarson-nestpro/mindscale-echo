@@ -41,6 +41,8 @@ export async function POST(request) {
     const session = sessionId
       ? await stripe.checkout.sessions.retrieve(sessionId)
       : event.data?.object;
+    // Lead brief attaches here via syncLeadOntoPaidOrder inside the upsert.
+    // Do not add a second webhook for V2.
     order = await upsertOrderFromCheckoutSession(session);
   } catch (err) {
     console.error('[stripe-webhook] persist failed:', err?.message);
