@@ -118,7 +118,7 @@ Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` st
 Verification email (V2 only):
 
 ```
-Subject: Your Mindscale Echo code: 483-201
+Subject: Your Mindscale Echo code: 483201
 
 Here's your code: 483201. Good for 20 minutes. Or just tap the button below.
 ```

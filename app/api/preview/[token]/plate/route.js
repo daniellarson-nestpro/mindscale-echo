@@ -1,4 +1,4 @@
-import { DEMO_DRAFT } from '../../../../../lib/draft';
+import { loadPreviewDraft } from '../../../../../lib/preview-draft';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,11 +45,10 @@ function wrap(text, max) {
   return lines;
 }
 
-export async function GET() {
-  // HOOK: load the real draft for `params.token` once GET /api/brief has a
-  // draft_body. Until then keep this SVG plate. Do not call n8n or a
-  // headless PNG renderer from here (no production auth).
-  const d = DEMO_DRAFT;
+export async function GET(_request, { params }) {
+  // HOOK: load draft_body when the composer exists. Until then the lead
+  // maps through draftFromBrief. Do not call n8n or a headless PNG renderer.
+  const d = await loadPreviewDraft(params?.token);
 
   const W = 900;
   const H = 1165; // 8.5:11
@@ -65,11 +64,13 @@ export async function GET() {
       d.companyName
     )}</text>`
   );
-  out.push(
-    `<text x="${W - PAD}" y="${y + 14}" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="12" fill="#555">${esc(
-      d.website
-    )}</text>`
-  );
+  if (d.website) {
+    out.push(
+      `<text x="${W - PAD}" y="${y + 14}" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="12" fill="#555">${esc(
+        d.website
+      )}</text>`
+    );
+  }
   y += 34;
   out.push(`<line x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" stroke="#111" stroke-width="1"/>`);
   y += 30;
@@ -90,14 +91,16 @@ export async function GET() {
   });
 
   y += 6;
-  wrap(d.subhead, 62).forEach((line) => {
-    out.push(
-      `<text x="${PAD}" y="${y}" font-family="Georgia, serif" font-size="16" font-style="italic" fill="#333">${esc(
-        line
-      )}</text>`
-    );
-    y += 23;
-  });
+  if (d.subhead) {
+    wrap(d.subhead, 62).forEach((line) => {
+      out.push(
+        `<text x="${PAD}" y="${y}" font-family="Georgia, serif" font-size="16" font-style="italic" fill="#333">${esc(
+          line
+        )}</text>`
+      );
+      y += 23;
+    });
+  }
 
   y += 26;
 
@@ -128,14 +131,17 @@ export async function GET() {
 
   // Quote — its own paragraph, no pull-quote treatment. Press releases
   // don't pull-quote.
-  wrap(`“${d.quote}” — ${d.quoteAttribution}`, COL).forEach((line) => {
-    out.push(
-      `<text x="${PAD}" y="${y}" font-family="Georgia, serif" font-size="15" fill="#111">${esc(
-        line
-      )}</text>`
-    );
-    y += 24;
-  });
+  if (d.quote) {
+    const quoted = d.quoteAttribution ? `“${d.quote}” — ${d.quoteAttribution}` : `“${d.quote}”`;
+    wrap(quoted, COL).forEach((line) => {
+      out.push(
+        `<text x="${PAD}" y="${y}" font-family="Georgia, serif" font-size="15" fill="#111">${esc(
+          line
+        )}</text>`
+      );
+      y += 24;
+    });
+  }
 
   // End mark — its absence is noticed by exactly the people we send to.
   y += 22;
@@ -183,7 +189,7 @@ export async function GET() {
   return new Response(svg, {
     headers: {
       'Content-Type': 'image/svg+xml',
-      'Cache-Control': 'private, max-age=60',
+      'Cache-Control': 'private, no-store',
     },
   });
 }

@@ -67,9 +67,11 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
           <h2 className="font-display text-[1.7rem] leading-[1.15] text-white sm:text-[2.1rem]">
             {draft.headline}
           </h2>
-          <p className="mt-4 font-display text-[1.1rem] italic leading-snug text-white/60">
-            {draft.subhead}
-          </p>
+          {draft.subhead ? (
+            <p className="mt-4 font-display text-[1.1rem] italic leading-snug text-white/60">
+              {draft.subhead}
+            </p>
+          ) : null}
 
           <p className="mt-8 text-[1.02rem] leading-[1.75] text-white/72">
             <span className="font-medium text-white/90">{draft.dateline}</span> —{' '}
@@ -82,9 +84,12 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
             </p>
           ))}
 
-          <p className="mt-6 text-[1.02rem] leading-[1.75] text-white/72">
-            “{draft.quote}” — {draft.quoteAttribution}
-          </p>
+          {draft.quote ? (
+            <p className="mt-6 text-[1.02rem] leading-[1.75] text-white/72">
+              “{draft.quote}”
+              {draft.quoteAttribution ? ` — ${draft.quoteAttribution}` : ''}
+            </p>
+          ) : null}
 
           <p className="mt-8 font-mono text-[10px] uppercase tracking-eyebrow text-white/35">
             About {draft.companyName}

@@ -1,7 +1,7 @@
 import FunnelShell from '../../../components/funnel/FunnelShell';
 import PreviewScreen from '../../../components/funnel/PreviewScreen';
-import { DEMO_DRAFT } from '../../../lib/draft';
 import { PLANS } from '../../../lib/plans';
+import { loadPreviewDraft } from '../../../lib/preview-draft';
 
 export const metadata = {
   title: 'Your draft release | Mindscale Echo',
@@ -10,11 +10,10 @@ export const metadata = {
 
 export const dynamic = 'force-dynamic';
 
-export default function PreviewPage({ params }) {
-  // HOOK: load draft_body + brief fields for params.token. DEMO_DRAFT stands
-  // in while GET /api/brief has no draft_body. Do not call n8n from this
-  // route (no production auth). The shape is identical.
-  const draft = DEMO_DRAFT;
+export default async function PreviewPage({ params }) {
+  // HOOK: when GET /api/brief has a draft_body, prefer that. Until then
+  // draftFromBrief maps the lead. Do not call n8n.
+  const draft = await loadPreviewDraft(params?.token);
 
   return (
     <FunnelShell width="wide">

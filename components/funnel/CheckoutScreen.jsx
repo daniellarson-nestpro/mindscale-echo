@@ -12,9 +12,7 @@ import { Check, Lock, ArrowUpRight } from '../Icons';
  * same CheckoutButton hitting the same POST /api/checkout. No new Stripe UI.
  *
  * Identity (email + preview token) is passed through so Stripe can stamp it
- * on the session. Brief/composer are still stubs on this branch: token
- * defaults to `demo`, and email is whatever the query string or a session
- * probe returns — not a saved brief.
+ * on the session. Summary is the signed-in lead’s company, not DEMO_DRAFT.
  *
  * The purchase is always framed as *sending it out*. Never "unlock the PDF":
  * at this price the product is distribution and the PDF is an inclusion.

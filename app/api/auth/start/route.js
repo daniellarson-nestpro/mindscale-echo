@@ -99,13 +99,12 @@ export async function POST(request) {
     to: email,
     loginUrl,
     code: issued.code,
-    codeDisplay: issued.codeDisplay,
   });
 
   if (!mail.sent) {
     console.info('[auth/start] code issued; email not sent:', mail.reason, email);
     if (process.env.NODE_ENV !== 'production') {
-      console.info('[auth/start] dev code:', issued.codeDisplay, 'url:', loginUrl);
+      console.info('[auth/start] dev code:', issued.code, 'url:', loginUrl);
     }
   }
 

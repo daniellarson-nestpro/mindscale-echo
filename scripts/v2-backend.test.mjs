@@ -21,6 +21,7 @@ import { parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
 import { briefSavedBody, leadToBriefJson } from '../lib/brief-shape.js';
+import { checkoutSummaryFromBrief, draftFromBrief, hasRealBrief } from '../lib/draft.js';
 import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../lib/url.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -263,6 +264,47 @@ test('PATCH /api/brief response and GET resume shape', () => {
   assert.equal(brief.brief.contactName, 'Dana');
   assert.equal(brief.brief.contactEmail, 'dana@northline.com');
   assert.equal(brief.brief.articleUrl, 'https://localpaper.com/story');
+});
+
+test('verification email copy is six digits with no dash', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const emailSrc = readFileSync(join(here, '../lib/email.js'), 'utf8');
+  assert.equal(emailSrc.includes("Your Mindscale Echo code: ${digits}"), true);
+  assert.equal(emailSrc.includes("Here's your code: ${digits}."), true);
+  assert.equal(emailSrc.includes("Here's your code: ${pretty}"), false);
+  assert.equal(emailSrc.includes('483-201'), false);
+});
+
+test('draftFromBrief uses the lead, never Sal’s Pizza', () => {
+  const now = new Date('2026-09-03T12:00:00Z');
+  const draft = draftFromBrief(
+    {
+      companyName: 'Northline',
+      website: 'northline.com',
+      contactName: 'Dana',
+      contactEmail: 'dana@northline.com',
+      phone: '555-123-4567',
+      announcementType: 'Grand opening',
+      articleUrl: 'https://localpaper.com/story',
+      articleText: 'The shop opened downtown.\n\nNeighbors showed up.',
+      quote: 'We opened.',
+      quoteAttribution: 'Dana, Owner',
+      notes: 'Family-run.',
+    },
+    now
+  );
+  assert.equal(draft.companyName, 'Northline');
+  assert.equal(draft.headline.includes('Northline'), true);
+  assert.equal(draft.headline.includes('Grand opening'), true);
+  assert.deepEqual(draft.bodyParagraphs, ['The shop opened downtown.', 'Neighbors showed up.']);
+  assert.equal(draft.quote, 'We opened.');
+  assert.equal(JSON.stringify(draft).toLowerCase().includes('sal'), false);
+  assert.equal(draft.dateline.includes('GRANDVIEW'), false);
+  assert.equal(hasRealBrief({ companyName: 'Northline' }), true);
+  assert.equal(hasRealBrief({}), false);
+  assert.equal(checkoutSummaryFromBrief({ companyName: 'Northline', announcementType: 'Grand opening' }), 'Northline · Grand opening');
+  assert.equal(checkoutSummaryFromBrief(null), 'Draft ready');
+  assert.equal(checkoutSummaryFromBrief({ companyName: "Sal’s Pizza & Pasta" }).includes('Second location'), false);
 });
 
 test('checkout next/email/token guards reject open redirects', () => {
