@@ -828,7 +828,14 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
 import { readFileSync as rfs } from 'node:fs';
 import { fileURLToPath as fUrl } from 'node:url';
 import { dirname as dn, join as jn } from 'node:path';
-import { validateLogoBuffer } from '../lib/logo-storage.js';
+import {
+  validateLogoBuffer,
+  inferImageMime,
+  blobPutOptions,
+  shouldRetryAsPrivate,
+  putLogoBlob,
+  storeLogo,
+} from '../lib/logo-storage.js';
 import { APPROVAL_CHECKBOX_COPY, displayOrderStatus } from '../lib/approval.js';
 const HERE = dn(fUrl(import.meta.url));
 
@@ -916,6 +923,78 @@ test('logo storage: launch blocker without BLOB_READ_WRITE_TOKEN', () => {
   assert.ok(logoStorageSrc.includes('BLOB_READ_WRITE_TOKEN'), 'checks for token');
   assert.ok(logoStorageSrc.includes('launchBlocker'), 'returns launchBlocker flag');
   assert.ok(logoStorageSrc.includes('LAUNCH BLOCKER'), 'logs LAUNCH BLOCKER');
+  // Static import so Next.js bundles @vercel/blob into the serverless function.
+  assert.ok(
+    /import \{ put \} from '@vercel\/blob'/.test(logoStorageSrc),
+    'statically imports @vercel/blob'
+  );
+  assert.ok(!logoStorageSrc.includes("await import('@vercel/blob')"), 'does not dynamically import blob SDK');
+});
+
+test('blob put options pass RW token and default to public access', () => {
+  const opts = blobPutOptions({ mimeType: 'image/png', token: 'vercel_blob_rw_test' });
+  assert.equal(opts.access, 'public');
+  assert.equal(opts.contentType, 'image/png');
+  assert.equal(opts.token, 'vercel_blob_rw_test');
+  assert.equal(opts.addRandomSuffix, true);
+});
+
+test('shouldRetryAsPrivate classifies store access mismatches', () => {
+  assert.equal(shouldRetryAsPrivate(new Error('Cannot use public access on a private store')), true);
+  assert.equal(shouldRetryAsPrivate(new Error('Access denied, please provide a valid token')), false);
+  assert.equal(shouldRetryAsPrivate(new Error('timeout')), false);
+});
+
+test('putLogoBlob retries as private when public access is rejected', async () => {
+  const calls = [];
+  const putImpl = async (_path, _body, options) => {
+    calls.push(options.access);
+    if (options.access === 'public') {
+      throw new Error('Cannot use public access on a private store');
+    }
+    return { url: 'https://blob.example/logo.png', pathname: 'logos/x/logo.png' };
+  };
+  const result = await putLogoBlob('logos/x/logo.png', new Uint8Array([1, 2, 3]), {
+    mimeType: 'image/png',
+    token: 'vercel_blob_rw_test',
+    putImpl,
+  });
+  assert.deepEqual(calls, ['public', 'private']);
+  assert.equal(result.url, 'https://blob.example/logo.png');
+});
+
+test('storeLogo succeeds with mocked put and PNG magic bytes', async () => {
+  const prev = process.env.BLOB_READ_WRITE_TOKEN;
+  process.env.BLOB_READ_WRITE_TOKEN = 'vercel_blob_rw_test';
+  try {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+    const stored = await storeLogo({
+      buffer: png,
+      mimeType: 'image/png',
+      originalName: 'mark.png',
+      leadId: 'lead-1',
+      putImpl: async () => ({ url: 'https://blob.example/mark.png', pathname: 'logos/lead-1/mark.png' }),
+    });
+    assert.equal(stored.ok, true);
+    assert.equal(stored.url, 'https://blob.example/mark.png');
+    assert.equal(stored.type, 'image/png');
+  } finally {
+    if (prev === undefined) delete process.env.BLOB_READ_WRITE_TOKEN;
+    else process.env.BLOB_READ_WRITE_TOKEN = prev;
+  }
+});
+
+test('inferImageMime reads PNG signature when Content-Type is missing', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+  assert.equal(inferImageMime(png), 'image/png');
+  assert.equal(inferImageMime(Buffer.from('hello')), '');
+});
+
+test('logo route infers MIME and wraps unhandled errors as JSON 502', () => {
+  const routeSrc = rfs(jn(HERE, '../app/api/logo/route.js'), 'utf8');
+  assert.ok(routeSrc.includes('inferImageMime'), 'infers MIME when file.type is empty');
+  assert.ok(routeSrc.includes('unhandled:'), 'catches unhandled throws');
+  assert.ok(routeSrc.includes("formData.get('logo')"), 'reads logo FormData field');
 });
 
 test('compose_runs: exact payload saved BEFORE n8n call', () => {
