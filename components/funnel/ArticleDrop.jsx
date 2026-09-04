@@ -1,9 +1,10 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { MIN_ARTICLE_CHARS } from '../../lib/brief-shape';
 import { Check } from '../Icons';
 
-const MIN_PASTE_LENGTH = 100;
+const MIN_PASTE_LENGTH = MIN_ARTICLE_CHARS;
 
 /**
  * V1 article intake: PDF upload or pasted text only.
@@ -42,7 +43,9 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
       setHint('PDF must be under 20 MB.');
       return;
     }
-    setHint(null);
+    setHint(
+      'We can’t read the words out of a PDF yet. Please paste the article text so we have something to write from.'
+    );
     onAdd({ type: 'file', value: file.name, file, meta: `${(file.size / 1024).toFixed(0)} KB · PDF` });
   };
 
@@ -176,7 +179,10 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
                 </span>
                 <button
                   type="button"
-                  onClick={() => onRemove(i)}
+                  onClick={() => {
+                    setHint(null);
+                    onRemove(i);
+                  }}
                   aria-label="Remove this source"
                   className="shrink-0 text-white/35 transition-colors duration-300 hover:text-white"
                 >

@@ -20,7 +20,7 @@ import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
 import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
-import { briefSavedBody, hasResumableBrief, initialFromBrief, leadToBriefJson, mergeBriefFormState, sourcesFromBrief } from '../lib/brief-shape.js';
+import { briefSavedBody, hasResumableBrief, initialFromBrief, leadToBriefJson, mergeBriefFormState, sourcesFromBrief, articlePatchFromSources, hasUsableArticleSource, MIN_ARTICLE_CHARS } from '../lib/brief-shape.js';
 import { checkoutSummaryFromBrief, draftFromBrief, hasRealBrief } from '../lib/draft.js';
 import {
   articleSourceFromLead,
@@ -323,6 +323,27 @@ test('brief form resume maps saved fields including article sources', () => {
   assert.equal(merged.values.companyName, 'Northline');
   assert.equal(merged.sources.length, 2);
   assert.deepEqual(initialFromBrief(null), {});
+});
+
+test('articlePatchFromSources persists paste and clears when sources are removed', () => {
+  const pasted = 'The shop opened downtown. '.repeat(8).trim();
+  assert.ok(pasted.length >= MIN_ARTICLE_CHARS);
+
+  const fromPaste = articlePatchFromSources([{ type: 'text', value: pasted }]);
+  assert.equal(fromPaste.articleText, pasted);
+  assert.equal(fromPaste.articleSource, 'paste');
+  assert.equal(hasUsableArticleSource([{ type: 'text', value: pasted }]), true);
+
+  const fromPdfOnly = articlePatchFromSources([{ type: 'file', value: 'story.pdf' }]);
+  assert.equal(fromPdfOnly.articleText, '');
+  assert.equal(fromPdfOnly.articleSource, 'pdf');
+  assert.equal(hasUsableArticleSource([{ type: 'file', value: 'story.pdf' }]), false);
+
+  const cleared = articlePatchFromSources([]);
+  assert.equal(cleared.articleText, '');
+  assert.equal(cleared.articleSource, '');
+  assert.equal(hasUsableArticleSource([]), false);
+  assert.equal(hasUsableArticleSource([{ type: 'text', value: 'too short' }]), false);
 });
 
 test('Change something stays on V2 /brief#news; GET 401 goes to /start', () => {
@@ -1199,6 +1220,18 @@ test('sanitizeLeadFields: articleSource accepted for pdf/paste only (source insp
   assert.ok(leadsSrc.includes("src === 'pdf' || src === 'paste'"), 'only pdf/paste accepted');
   assert.ok(!leadsSrc.includes("src === 'url'"), 'url is not accepted as article_source');
   assert.ok(leadsSrc.includes('article_source'), 'article_source field is handled');
+  assert.ok(
+    leadsSrc.includes('article_source = EXCLUDED.article_source'),
+    'clearing sources can null article_source'
+  );
+  assert.ok(
+    !leadsSrc.includes('article_source = COALESCE(EXCLUDED.article_source'),
+    'stale article_source is not preserved on clear'
+  );
+  assert.ok(
+    leadsSrc.includes("src === '' || src === null"),
+    'empty articleSource clears the lead field'
+  );
 });
 
 test('Telegram config: launch blocker logged when not configured', () => {
@@ -1233,5 +1266,23 @@ test('no article → compose fails with honest error, brief preserved', () => {
   assert.ok(completeSrc.includes('insufficient_article'), 'returns insufficient_article error');
   assert.ok(completeSrc.includes('markComposeFinished'), 'unlocks compose on article missing');
   assert.ok(!completeSrc.includes('DEMO_DRAFT'), 'no DEMO_DRAFT fallback');
+});
+
+test('BriefForm persists articleText on source change and flushes before compose', () => {
+  const briefSrc = rfs(jn(HERE, '../components/funnel/BriefForm.jsx'), 'utf8');
+  assert.ok(briefSrc.includes('articlePatchFromSources'), 'maps sources to article PATCH fields');
+  assert.ok(briefSrc.includes('hasUsableArticleSource'), 'gates submit on usable article');
+  assert.ok(briefSrc.includes('addSource'), 'persists when a source is added');
+  assert.ok(briefSrc.includes('removeSource'), 'persists when a source is removed');
+  assert.ok(briefSrc.includes('persist(articlePatchFromSources(next))'), 'PATCH article on source change');
+  assert.ok(briefSrc.includes('async function flushSave'), 'flushSave awaits in-flight debounce/PATCH');
+  assert.ok(briefSrc.includes('articlePatchFromSources(sources)'), 'flush includes article from sources');
+  const flushIdx = briefSrc.indexOf('await flushSave()');
+  const composeIdx = briefSrc.indexOf('setComposing(true)');
+  assert.ok(flushIdx !== -1 && composeIdx !== -1 && flushIdx < composeIdx, 'awaits flush before ComposeWait');
+  assert.ok(briefSrc.includes('if (!saved) return'), 'stays on brief when flush save fails');
+  assert.ok(briefSrc.includes('BRIEF.articleMissing'), 'shows article missing near ArticleDrop');
+  assert.ok(briefSrc.includes('error={errors.article}'), 'article error is passed to ArticleDrop');
+  assert.ok(!briefSrc.includes('DEMO_DRAFT'), 'no fake draft on the brief');
 });
 

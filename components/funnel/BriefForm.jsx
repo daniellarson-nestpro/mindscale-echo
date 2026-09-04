@@ -6,8 +6,10 @@ import ArticleDrop from './ArticleDrop';
 import LogoUpload from './LogoUpload';
 import ComposeWait from './ComposeWait';
 import {
+  articlePatchFromSources,
   briefToFormState,
   hasResumableBrief,
+  hasUsableArticleSource,
   mergeBriefFormState,
 } from '../../lib/brief-shape';
 import { BRIEF, FIELDS, ANNOUNCEMENT_CHIPS } from '../../lib/funnel';
@@ -48,6 +50,7 @@ export default function BriefForm({ initial = {} }) {
   const [resumed, setResumed] = useState(hasResumableBrief(initial));
   const [active, setActive] = useState('business');
   const debounce = useRef(null);
+  const inflight = useRef(null);
   const sectionRefs = useRef({});
 
   useEffect(() => {
@@ -111,21 +114,55 @@ export default function BriefForm({ initial = {} }) {
   /** Per-field autosave. Partial records are the normal case, not an error. */
   async function persist(patch) {
     setSave('saving');
-    try {
-      const res = await fetch('/api/brief', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      if (res.status === 401) {
-        router.replace('/start');
-        return;
+    const request = (async () => {
+      try {
+        const res = await fetch('/api/brief', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        if (res.status === 401) {
+          router.replace('/start');
+          return false;
+        }
+        if (!res.ok) throw new Error('save failed');
+        setSave('idle');
+        return true;
+      } catch {
+        setSave('failed');
+        return false;
       }
-      if (!res.ok) throw new Error('save failed');
-      setSave('idle');
-    } catch {
-      setSave('failed');
+    })();
+    inflight.current = request;
+    try {
+      return await request;
+    } finally {
+      if (inflight.current === request) inflight.current = null;
     }
+  }
+
+  /** Cancel debounce, wait for any in-flight PATCH, then save current fields + article. */
+  async function flushSave() {
+    clearTimeout(debounce.current);
+    debounce.current = null;
+    if (inflight.current) await inflight.current;
+    return persist({ ...values, ...articlePatchFromSources(sources) });
+  }
+
+  function addSource(s) {
+    const next = [
+      ...sources,
+      { ...s, display: s.type === 'text' ? 'Article text' : s.value },
+    ];
+    setSources(next);
+    if (errors.article) setErrors((x) => ({ ...x, article: null }));
+    persist(articlePatchFromSources(next));
+  }
+
+  function removeSource(i) {
+    const next = sources.filter((_, x) => x !== i);
+    setSources(next);
+    persist(articlePatchFromSources(next));
   }
 
   const set = (name) => (e) => {
@@ -149,6 +186,7 @@ export default function BriefForm({ initial = {} }) {
     if (values.contactEmail && !EMAIL_RE.test(values.contactEmail)) {
       next.contactEmail = FIELDS.contactEmail.invalid;
     }
+    if (!hasUsableArticleSource(sources)) next.article = BRIEF.articleMissing;
     setErrors(next);
     return Object.keys(next).length === 0;
   }
@@ -157,10 +195,13 @@ export default function BriefForm({ initial = {} }) {
     e.preventDefault();
     if (!validate()) {
       const first = REQUIRED.find((f) => !String(values[f] || '').trim());
-      document.getElementById(first)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      document.getElementById(first)?.focus({ preventScroll: true });
+      const target = first || 'news';
+      document.getElementById(target)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (first) document.getElementById(first)?.focus({ preventScroll: true });
       return;
     }
+    const saved = await flushSave();
+    if (!saved) return;
     setComposing(true);
   }
 
@@ -277,13 +318,9 @@ export default function BriefForm({ initial = {} }) {
             <div className="mt-6">
               <ArticleDrop
                 sources={sources}
-                onAdd={(s) =>
-                  setSources((prev) => [
-                    ...prev,
-                    { ...s, display: s.type === 'text' ? 'Article text' : s.value },
-                  ])
-                }
-                onRemove={(i) => setSources((prev) => prev.filter((_, x) => x !== i))}
+                onAdd={addSource}
+                onRemove={removeSource}
+                error={errors.article}
               />
             </div>
 
@@ -420,7 +457,7 @@ export default function BriefForm({ initial = {} }) {
           <div className="flex flex-col gap-4 pb-4 sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
-              onClick={() => persist(values)}
+              onClick={() => persist({ ...values, ...articlePatchFromSources(sources) })}
               className="text-left text-[0.85rem] text-white/40 transition-colors duration-300 hover:text-white"
             >
               {BRIEF.saveLater}
