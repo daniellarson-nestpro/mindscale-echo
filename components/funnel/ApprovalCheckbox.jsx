@@ -1,16 +1,23 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { APPROVAL_CHECKBOX_COPY as CHECKBOX_COPY } from '../../lib/approval.js';
 
 /**
  * Final approval checkbox with clear disclaimers.
  * Distinguishes between "Approved by customer" and "PR sent to vendor."
+ *
+ * The account page is a Server Component and cannot pass a refresh callback.
+ * On success this component always router.refresh()s and shows a local
+ * already-approved state so the button cannot stay enabled after a 200.
  */
 export default function ApprovalCheckbox({ onApproved, loading }) {
+  const router = useRouter();
   const [checked, setChecked] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [done, setDone] = useState(false);
 
   async function handleApprove() {
     if (!checked) {
@@ -30,12 +37,31 @@ export default function ApprovalCheckbox({ onApproved, loading }) {
         setError(data.error || 'Could not record approval. Please try again.');
         return;
       }
+      setDone(true);
       onApproved?.(data);
+      router.refresh();
     } catch {
       setError('Network error. Please try again.');
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (done) {
+    return (
+      <div
+        className="rounded-[1.5rem] p-5"
+        style={{
+          background: 'rgba(127,240,192,0.06)',
+          boxShadow: 'inset 0 0 0 1px rgba(127,240,192,0.22)',
+        }}
+      >
+        <p className="text-[0.9rem] font-medium text-echo-mint">Release approved</p>
+        <p className="mt-1 text-[0.82rem] text-white/50">
+          Your approval has been recorded. It is queued for manual vendor submission.
+        </p>
+      </div>
+    );
   }
 
   return (

@@ -829,7 +829,7 @@ import { readFileSync as rfs } from 'node:fs';
 import { fileURLToPath as fUrl } from 'node:url';
 import { dirname as dn, join as jn } from 'node:path';
 import { validateLogoBuffer } from '../lib/logo-storage.js';
-import { APPROVAL_CHECKBOX_COPY } from '../lib/approval.js';
+import { APPROVAL_CHECKBOX_COPY, displayOrderStatus } from '../lib/approval.js';
 const HERE = dn(fUrl(import.meta.url));
 
 test('six-digit code: no dash, exactly 6 digits', () => {
@@ -1063,6 +1063,31 @@ test('approval checkbox: copy is canonical and stored', () => {
   assert.ok(APPROVAL_CHECKBOX_COPY.includes('refund'), 'mentions refund disclaimer');
   assert.ok(APPROVAL_CHECKBOX_COPY.includes('vendor'), 'mentions vendor submission');
   assert.ok(!APPROVAL_CHECKBOX_COPY.includes('irreversible'), 'does not say irreversible');
+});
+
+test('approval checkbox refreshes account UI after success', () => {
+  const checkboxSrc = rfs(jn(HERE, '../components/funnel/ApprovalCheckbox.jsx'), 'utf8');
+  const accountSrc = rfs(jn(HERE, '../app/account/page.jsx'), 'utf8');
+  const wrapperSrc = rfs(jn(HERE, '../components/funnel/PaidReleaseStatus.jsx'), 'utf8');
+  assert.ok(checkboxSrc.includes('router.refresh()'), 'ApprovalCheckbox calls router.refresh on success');
+  assert.ok(checkboxSrc.includes('setDone(true)'), 'ApprovalCheckbox shows local already-approved state');
+  assert.ok(wrapperSrc.includes('onApproved={handleApproved}'), 'PaidReleaseStatus passes onApproved');
+  assert.ok(wrapperSrc.includes("setStatus((prev) => (prev === 'pr_sent' ? prev : 'approved'))"), 'ladder moves to approved');
+  assert.ok(accountSrc.includes('PaidReleaseStatus'), 'account page uses client wrapper');
+});
+
+test('displayOrderStatus: approval row wins over stale paid status', () => {
+  assert.equal(displayOrderStatus({ orderStatus: 'paid', alreadyApproved: true }), 'approved');
+  assert.equal(displayOrderStatus({ orderStatus: 'approved', alreadyApproved: true }), 'approved');
+  assert.equal(displayOrderStatus({ orderStatus: 'pr_sent', alreadyApproved: true }), 'pr_sent');
+  assert.equal(displayOrderStatus({ orderStatus: 'paid', alreadyApproved: false }), 'paid');
+  assert.equal(displayOrderStatus({ orderStatus: 'refunded', alreadyApproved: true }), 'refunded');
+});
+
+test('LogoUpload posts the file to /api/logo', () => {
+  const logoSrc = rfs(jn(HERE, '../components/funnel/LogoUpload.jsx'), 'utf8');
+  assert.ok(logoSrc.includes("fetch('/api/logo'"), 'LogoUpload POSTs to /api/logo');
+  assert.ok(logoSrc.includes("form.append('logo'"), 'sends logo field as FormData');
 });
 
 test('approval: require checkbox before marking approved', () => {

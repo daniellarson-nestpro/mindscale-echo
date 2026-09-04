@@ -3,15 +3,15 @@ import Nav from '../../components/Nav';
 import AppFooter from '../../components/AppFooter';
 import ReleaseCard from '../../components/ReleaseCard';
 import { getSession } from '../../lib/auth';
-import { getLeadByEmail, progressForEmail, getApprovalForLead } from '../../lib/leads';
+import { progressForEmail, getApprovalForLead } from '../../lib/leads';
 import { ACCOUNT } from '../../lib/draft';
 import { PLANS } from '../../lib/plans';
 import { getStripe } from '../../lib/stripe';
 import { looksLikeEmail, safePreviewToken } from '../../lib/url';
 import { hasBrief, isPaid } from '../../lib/release-status';
 import { ArrowUpRight, ArrowRight, Check } from '../../components/Icons';
-import StatusLadder from '../../components/funnel/StatusLadder';
-import ApprovalCheckbox from '../../components/funnel/ApprovalCheckbox';
+import PaidReleaseStatus from '../../components/funnel/PaidReleaseStatus';
+import { displayOrderStatus } from '../../lib/approval';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,16 +84,10 @@ export default async function AccountPage({ searchParams }) {
   const previewHref = `/preview/${token}`;
   const checkoutHref = `/checkout?token=${encodeURIComponent(token)}`;
 
-  // Determine order status for status ladder
-  const orderStatus = lead?.order_status || latestOrder?.order_status || (purchased ? 'paid' : null);
-
-  // Check if already approved
   const existingApproval = lead?.id ? await getApprovalForLead(lead.id).catch(() => null) : null;
   const alreadyApproved = Boolean(existingApproval);
-
-  // Show approval section for paid, not-yet-approved orders that have a draft
-  const showApproval = purchased && !alreadyApproved && orderStatus !== 'approved' && orderStatus !== 'pr_sent';
-  const showStatusLadder = purchased && orderStatus;
+  const storedStatus = lead?.order_status || latestOrder?.order_status || (purchased ? 'paid' : null);
+  const orderStatus = displayOrderStatus({ orderStatus: storedStatus, alreadyApproved });
 
   return (
     <>
@@ -173,54 +167,14 @@ export default async function AccountPage({ searchParams }) {
               </div>
             )}
 
-            {/* Status ladder for paid orders */}
-            {showStatusLadder && (
-              <div className="bezel">
-                <div className="bezel-core p-7 sm:p-8">
-                  <h2 className="mb-6 text-[1.25rem] text-white/80">Release status</h2>
-                  <StatusLadder orderStatus={orderStatus} />
-                </div>
-              </div>
-            )}
-
-            {/* Approval section for paid orders awaiting approval */}
-            {showApproval && (
-              <div className="max-w-2xl">
-                <div className="mb-3">
-                  <a href={previewHref} className="btn btn-ghost text-[0.88rem]">
-                    ← Review your press release first
-                  </a>
-                </div>
-                <ApprovalCheckbox />
-              </div>
-            )}
-
-            {/* Already approved confirmation */}
-            {purchased && alreadyApproved && (
-              <div
-                className="max-w-2xl rounded-[1.5rem] p-5"
-                style={{
-                  background: 'rgba(127,240,192,0.06)',
-                  boxShadow: 'inset 0 0 0 1px rgba(127,240,192,0.22)',
-                }}
-              >
-                <p className="flex items-center gap-2 text-[0.9rem] font-medium text-echo-mint">
-                  <Check width={14} height={14} /> Release approved
-                </p>
-                <p className="mt-1 text-[0.82rem] text-white/50">
-                  You approved this press release on{' '}
-                  {existingApproval?.approved_at
-                    ? new Date(existingApproval.approved_at).toLocaleDateString()
-                    : 'file'}
-                  . It is queued for manual vendor submission.
-                </p>
-                {(orderStatus === 'pr_sent') && (
-                  <p className="mt-2 text-[0.82rem] text-echo-mint/80">
-                    Your press release has been submitted to the vendor.
-                  </p>
-                )}
-              </div>
-            )}
+            {purchased && orderStatus ? (
+              <PaidReleaseStatus
+                orderStatus={orderStatus}
+                alreadyApproved={alreadyApproved}
+                approvedAt={existingApproval?.approved_at || null}
+                previewHref={previewHref}
+              />
+            ) : null}
 
             {ladder === 'draft_ready_unpurchased' && !purchased && (
               <div className="bezel">
