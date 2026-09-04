@@ -7,16 +7,6 @@ import { PREVIEW, nextSendDay } from '../../lib/draft';
 import { BRIEF_EDIT_HREF } from '../../lib/funnel';
 import { ArrowUpRight, ArrowRight, Check, Shield } from '../Icons';
 
-/**
- * Two artifacts, not one document with a curtain.
- *
- * Free here: the complete draft as plain reading copy. Takeable, and that's
- * accepted — a walker still has to build the letterhead, the media list, and
- * do the sending, which is the work being sold.
- *
- * Paid: the letterhead copy and PDF, on /release/:id behind a 402. Pre-payment
- * the letterhead exists only as a flat plate image.
- */
 export default function PreviewScreen({ draft, token, price = '$499' }) {
   const router = useRouter();
   const [copied, setCopied] = useState(false);
@@ -43,7 +33,6 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
       <h1 className="mt-6 text-[2.1rem] leading-[1.02] sm:text-[2.6rem]">{PREVIEW.h1}</h1>
       <p className="mt-4 max-w-xl text-[1rem] leading-relaxed text-white/55">{PREVIEW.sub}</p>
 
-      {/* The plate: their letterhead, as a flat image only */}
       <figure className="mt-10">
         <div className="bezel">
           <div className="bezel-core overflow-hidden p-2">
@@ -62,7 +51,6 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
         </figcaption>
       </figure>
 
-      {/* The reading copy: complete, free, plain */}
       <article className="mt-12">
         <div className="rule" />
         <div className="mx-auto mt-10 max-w-[38rem]">
@@ -114,10 +102,6 @@ export default function PreviewScreen({ draft, token, price = '$499' }) {
           </p>
         </div>
       </article>
-
-      <p className="mx-auto mt-10 max-w-[38rem] text-[0.85rem] leading-relaxed text-white/38">
-        {PREVIEW.disclosure}
-      </p>
 
       <div className="mt-10 rule" />
 
