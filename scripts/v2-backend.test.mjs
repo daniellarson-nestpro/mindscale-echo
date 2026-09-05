@@ -841,7 +841,29 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
   assert.equal(waitSrc.includes('/api/brief/complete'), true);
   assert.equal(waitSrc.includes('data.ok !== true'), true);
   assert.equal(previewSrc.includes("saved?.source === 'n8n'"), true);
+  assert.equal(previewSrc.includes('getLeadById'), true);
   assert.equal(plateSrc.includes('loadPreviewDraft'), true);
+});
+
+test('loadPreviewDraft resolves lead by token before session email', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const previewSrc = readFileSync(join(here, '../lib/preview-draft.js'), 'utf8');
+  const fnStart = previewSrc.indexOf('export async function loadPreviewDraft');
+  assert.ok(fnStart !== -1, 'exports loadPreviewDraft');
+  const fnBody = previewSrc.slice(fnStart);
+  const tokenIdx = fnBody.indexOf('safePreviewToken(token)');
+  const byIdIdx = fnBody.indexOf('getLeadById(previewToken)');
+  const byEmailIdx = fnBody.indexOf('getLeadByEmail(session.email)');
+  assert.ok(tokenIdx !== -1, 'sanitizes the preview token');
+  assert.ok(byIdIdx !== -1, 'loads lead by token id');
+  assert.ok(byEmailIdx !== -1, 'falls back to session email');
+  assert.ok(tokenIdx < byIdIdx, 'sanitizes token before id lookup');
+  assert.ok(byIdIdx < byEmailIdx, 'token lookup precedes session fallback');
+  assert.ok(fnBody.includes("previewToken !== 'demo'"), 'skips id lookup for the demo token');
+  assert.ok(
+    !fnBody.slice(0, byIdIdx).includes('session?.email'),
+    'token-based load does not require a session'
+  );
 });
 
 // ─── V1 end-to-end acceptance tests ────────────────────────────────────────
