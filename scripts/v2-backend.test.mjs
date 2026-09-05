@@ -879,7 +879,13 @@ import {
   putLogoBlob,
   storeLogo,
 } from '../lib/logo-storage.js';
-import { APPROVAL_CHECKBOX_COPY, displayOrderStatus } from '../lib/approval.js';
+import {
+  APPROVAL_CHECKBOX_COPY,
+  APPROVAL_REQUIRED_MESSAGE,
+  displayOrderStatus,
+  previewApprovePath,
+  shouldGateCheckoutOnApproval,
+} from '../lib/approval.js';
 const HERE = dn(fUrl(import.meta.url));
 
 test('six-digit code: no dash, exactly 6 digits', () => {
@@ -1167,8 +1173,10 @@ test('checkout route: attaches lead_id and funnel=v2 to metadata', () => {
   const checkoutSrc = rfs(jn(HERE, '../app/api/checkout/route.js'), 'utf8');
   assert.ok(checkoutSrc.includes('lead_id'), 'lead_id in metadata');
   assert.ok(checkoutSrc.includes("funnel: 'v2'"), 'V2 funnel marker');
-  assert.ok(checkoutSrc.includes('getLeadByEmail'), 'looks up lead for metadata');
+  assert.ok(checkoutSrc.includes('getLeadForCheckout'), 'looks up lead for metadata');
   assert.ok(checkoutSrc.includes("funnel: 'v1'"), 'v1 fallback marker');
+  assert.ok(checkoutSrc.includes('approval_required'), 'refuses checkout without approval');
+  assert.ok(checkoutSrc.includes('hasN8nCompose'), 'gates only when a real n8n draft exists');
 });
 
 test('stripe webhook: idempotent upsert on stripe_session_id', () => {
@@ -1193,9 +1201,34 @@ test('approval checkbox refreshes account UI after success', () => {
   const wrapperSrc = rfs(jn(HERE, '../components/funnel/PaidReleaseStatus.jsx'), 'utf8');
   assert.ok(checkboxSrc.includes('router.refresh()'), 'ApprovalCheckbox calls router.refresh on success');
   assert.ok(checkboxSrc.includes('setDone(true)'), 'ApprovalCheckbox shows local already-approved state');
+  assert.ok(checkboxSrc.includes('CHECKBOX_COPY'), 'uses canonical audit copy');
+  assert.ok(checkboxSrc.includes('Approve this release'), 'button does not claim vendor submission');
+  assert.ok(!checkboxSrc.includes('Approve and submit for fulfillment'), 'old post-pay CTA is gone');
   assert.ok(wrapperSrc.includes('onApproved={handleApproved}'), 'PaidReleaseStatus passes onApproved');
   assert.ok(wrapperSrc.includes("setStatus((prev) => (prev === 'pr_sent' ? prev : 'approved'))"), 'ladder moves to approved');
+  assert.ok(wrapperSrc.includes("status === 'paid'"), 'account checkbox is paid-not-approved fallback only');
   assert.ok(accountSrc.includes('PaidReleaseStatus'), 'account page uses client wrapper');
+  assert.ok(accountSrc.includes('alreadyApproved'), 'account knows prior approval');
+});
+
+test('preview is the pre-pay approval surface', () => {
+  const previewSrc = rfs(jn(HERE, '../components/funnel/PreviewScreen.jsx'), 'utf8');
+  const previewPage = rfs(jn(HERE, '../app/preview/[token]/page.jsx'), 'utf8');
+  const checkoutPage = rfs(jn(HERE, '../app/checkout/page.jsx'), 'utf8');
+  const webhookSrc = rfs(jn(HERE, '../app/api/stripe-webhook/route.js'), 'utf8');
+  const leadsSrc = rfs(jn(HERE, '../lib/leads.js'), 'utf8');
+  const accountSrc = rfs(jn(HERE, '../app/account/page.jsx'), 'utf8');
+  assert.ok(previewSrc.includes('ApprovalCheckbox'), 'preview shows the approval checkbox');
+  assert.ok(previewSrc.includes('disabled={!canCheckout}'), 'Send it out waits for approval');
+  assert.ok(previewSrc.includes('/start'), 'unsigned-in owners are sent to start, not login');
+  assert.ok(!previewSrc.includes('/login'), 'preview does not use the post-pay login page');
+  assert.ok(previewPage.includes('requiresApproval'), 'preview page passes real-draft flag');
+  assert.ok(previewPage.includes('getApprovalForLead'), 'preview page loads existing approval');
+  assert.ok(checkoutPage.includes('redirect(previewApprovePath'), 'checkout page bounces unapproved drafts');
+  assert.ok(webhookSrc.includes('applyExistingApprovalToPaidOrder'), 'webhook reuses pre-pay approval');
+  assert.ok(leadsSrc.includes('orderId || null'), 'approvals.order_id can be null');
+  assert.ok(leadsSrc.includes('attachOrderIdToApproval'), 'paid order can attach later');
+  assert.ok(accountSrc.includes('alreadyApproved ?'), 'unapproved account draft does not push checkout');
 });
 
 test('displayOrderStatus: approval row wins over stale paid status', () => {
@@ -1204,6 +1237,16 @@ test('displayOrderStatus: approval row wins over stale paid status', () => {
   assert.equal(displayOrderStatus({ orderStatus: 'pr_sent', alreadyApproved: true }), 'pr_sent');
   assert.equal(displayOrderStatus({ orderStatus: 'paid', alreadyApproved: false }), 'paid');
   assert.equal(displayOrderStatus({ orderStatus: 'refunded', alreadyApproved: true }), 'refunded');
+});
+
+test('shouldGateCheckoutOnApproval: only real unapproved drafts', () => {
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: true, alreadyApproved: false }), true);
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: true, alreadyApproved: true }), false);
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: false, alreadyApproved: false }), false);
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: false, alreadyApproved: true }), false);
+  assert.equal(previewApprovePath('lead-123'), '/preview/lead-123?approve=1');
+  assert.equal(previewApprovePath('../x'), '/preview?approve=1');
+  assert.match(APPROVAL_REQUIRED_MESSAGE, /Approve your draft first/);
 });
 
 test('LogoUpload posts the file to /api/logo', () => {
@@ -1215,9 +1258,11 @@ test('LogoUpload posts the file to /api/logo', () => {
 test('approval: require checkbox before marking approved', () => {
   const approveSrc = rfs(jn(HERE, '../app/api/approve/route.js'), 'utf8');
   assert.ok(approveSrc.includes('approved !== true'), 'rejects if approved !== true');
-  assert.ok(approveSrc.includes("'approved'"), "sets status to 'approved'");
-  assert.ok(approveSrc.includes('payment_status'), 'validates payment before approval');
   assert.ok(approveSrc.includes('recordApproval'), 'records in approvals table');
+  assert.ok(approveSrc.includes('orderId: order?.id || null'), 'order id is optional before payment');
+  assert.ok(!approveSrc.includes('Payment is required before approving'), 'does not require a paid order');
+  assert.ok(approveSrc.includes('hasN8nCompose'), 'requires a finished draft when unpaid');
+  assert.ok(approveSrc.includes('notifyOwnerApproval'), 'owner is still notified on pre-pay approve');
 });
 
 test('status transitions: admin pr-sent endpoint is protected', () => {

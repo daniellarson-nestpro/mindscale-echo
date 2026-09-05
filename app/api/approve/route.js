@@ -7,6 +7,7 @@ import {
   getApprovalForLead,
   updateLeadOrderStatus,
 } from '../../../lib/leads';
+import { hasN8nCompose } from '../../../lib/compose';
 import { recordStatusTransition, notifyOwnerApproval } from '../../../lib/notify';
 import { APPROVAL_CHECKBOX_COPY } from '../../../lib/approval.js';
 
@@ -17,11 +18,12 @@ export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/approve — record customer approval of the press release.
- * Requires authentication and a paid order.
+ * Requires authentication. Payment is not required — approval happens on
+ * the draft preview, before checkout.
  * Body: { approved: true, orderId?: string }
  *
- * Sets order_status to 'approved' and records the approval for audit.
- * Does NOT submit to vendor — that is a manual step.
+ * Records an approvals row (order_id nullable until they pay).
+ * Does NOT submit to vendor — that is a manual post-pay ops step.
  */
 export async function POST(request) {
   const session = getSession();
@@ -58,7 +60,6 @@ export async function POST(request) {
     return NextResponse.json({ error: 'No release found for your account.' }, { status: 404 });
   }
 
-  // Check there is a paid order
   const sql = await getSql();
   let orders = [];
   try {
@@ -71,14 +72,14 @@ export async function POST(request) {
     return NextResponse.json({ error: 'unavailable' }, { status: 503 });
   }
 
-  if (!orders.length) {
+  const order = orders[0] || null;
+  const hasDraft = hasN8nCompose(lead);
+  if (!hasDraft && !order) {
     return NextResponse.json(
-      { error: 'Payment is required before approving. Please complete checkout first.' },
-      { status: 403 }
+      { error: 'A finished draft is required before you can approve.' },
+      { status: 422 }
     );
   }
-
-  const order = orders[0];
 
   // Idempotency: already approved
   const existing = await getApprovalForLead(lead.id);
@@ -87,7 +88,7 @@ export async function POST(request) {
       ok: true,
       alreadyApproved: true,
       approvedAt: existing.approved_at,
-      orderStatus: 'approved',
+      orderStatus: order ? 'approved' : lead.order_status || 'ready',
     });
   }
 
@@ -95,10 +96,9 @@ export async function POST(request) {
   const ipAddress =
     request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null;
 
-  // Record approval
   const approval = await recordApproval({
     leadId: lead.id,
-    orderId: order.id,
+    orderId: order?.id || null,
     approverEmail: session.email,
     checkboxCopy: APPROVAL_CHECKBOX_COPY, // exact copy stored for audit
     ipAddress,
@@ -108,38 +108,39 @@ export async function POST(request) {
     return NextResponse.json({ error: 'Could not record approval. Please try again.' }, { status: 500 });
   }
 
-  // Update order_status to 'approved'
-  await updateLeadOrderStatus(lead.id, 'approved');
-  try {
-    await sql`
-      UPDATE orders SET order_status = 'approved', approved_at = now(), updated_at = now()
-      WHERE id = ${order.id}
-    `;
-  } catch (err) {
-    console.error('[approve] order status update failed:', err?.message);
+  // Paid + approve (legacy fallback): mark the order approved now.
+  // Pre-pay approve: keep lead status as-is; webhook promotes after payment.
+  if (order) {
+    await updateLeadOrderStatus(lead.id, 'approved');
+    try {
+      await sql`
+        UPDATE orders SET order_status = 'approved', approved_at = now(), updated_at = now()
+        WHERE id = ${order.id}
+      `;
+    } catch (err) {
+      console.error('[approve] order status update failed:', err?.message);
+    }
+
+    await recordStatusTransition({
+      leadId: lead.id,
+      orderId: order.id,
+      fromStatus: 'paid',
+      toStatus: 'approved',
+      actor: session.email,
+    });
   }
 
-  // Record status transition
-  await recordStatusTransition({
-    leadId: lead.id,
-    orderId: order.id,
-    fromStatus: 'paid',
-    toStatus: 'approved',
-    actor: session.email,
-  });
-
-  // Notify owner
   notifyOwnerApproval({
     leadId: lead.id,
     email: session.email,
-    orderId: order.id,
+    orderId: order?.id || null,
   }).catch(() => {});
 
-  console.info('[approve] approved', { leadId: lead.id, orderId: order.id });
+  console.info('[approve] approved', { leadId: lead.id, orderId: order?.id || null });
 
   return NextResponse.json({
     ok: true,
     approvedAt: approval.approved_at,
-    orderStatus: 'approved',
+    orderStatus: order ? 'approved' : lead.order_status || 'ready',
   });
 }

@@ -190,21 +190,28 @@ export default async function AccountPage({ searchParams }) {
                     </p>
                   )}
                   <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <a href={previewHref} className="btn btn-ghost w-full justify-between sm:w-auto">
+                    <a
+                      href={previewHref}
+                      className={`btn w-full justify-between sm:w-auto ${
+                        alreadyApproved ? 'btn-ghost' : 'btn-primary'
+                      }`}
+                    >
                       {ACCOUNT.readIt}
                       <span className="btn-nib">
                         <ArrowRight />
                       </span>
                     </a>
-                    <a
-                      href={checkoutHref}
-                      className="btn btn-primary w-full justify-between sm:w-auto"
-                    >
-                      {ACCOUNT.sendIt}
-                      <span className="btn-nib">
-                        <ArrowUpRight />
-                      </span>
-                    </a>
+                    {alreadyApproved ? (
+                      <a
+                        href={checkoutHref}
+                        className="btn btn-primary w-full justify-between sm:w-auto"
+                      >
+                        {ACCOUNT.sendIt}
+                        <span className="btn-nib">
+                          <ArrowUpRight />
+                        </span>
+                      </a>
+                    ) : null}
                   </div>
                 </div>
               </div>

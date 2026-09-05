@@ -3,7 +3,13 @@ import { getSession } from '../../../lib/auth';
 import { getStripe, resolveOrigin } from '../../../lib/stripe';
 import { PLANS, priceIdFor, isPlaceholderPriceId } from '../../../lib/plans';
 import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../../../lib/url';
-import { getLeadByEmail } from '../../../lib/leads';
+import { getApprovalForLead, getLeadForCheckout } from '../../../lib/leads';
+import { hasN8nCompose } from '../../../lib/compose';
+import {
+  APPROVAL_REQUIRED_MESSAGE,
+  previewApprovePath,
+  shouldGateCheckoutOnApproval,
+} from '../../../lib/approval.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,13 +63,28 @@ export async function POST(request) {
   // Resolve lead and compose run IDs for metadata
   let leadId = '';
   let composeRunId = '';
-  if (email) {
+  let lead = null;
+  try {
+    lead = await getLeadForCheckout({ email, token });
+    leadId = lead?.id || '';
+    composeRunId = lead?.current_compose_run_id || '';
+  } catch {
+    // Non-fatal: metadata enrichment only
+  }
+
+  if (hasN8nCompose(lead)) {
+    let alreadyApproved = false;
     try {
-      const lead = await getLeadByEmail(email);
-      leadId = lead?.id || '';
-      composeRunId = lead?.current_compose_run_id || '';
+      alreadyApproved = Boolean(await getApprovalForLead(lead.id));
     } catch {
-      // Non-fatal: metadata enrichment only
+      alreadyApproved = false;
+    }
+    if (shouldGateCheckoutOnApproval({ hasRealDraft: true, alreadyApproved })) {
+      const previewUrl = previewApprovePath(lead.id || token);
+      return NextResponse.json(
+        { error: APPROVAL_REQUIRED_MESSAGE, code: 'approval_required', previewUrl },
+        { status: 403 }
+      );
     }
   }
 

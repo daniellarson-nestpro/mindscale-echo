@@ -7,9 +7,8 @@ import { Check } from '../Icons';
 import { displayOrderStatus } from '../../lib/approval.js';
 
 /**
- * Client wrapper so a successful approve can update the status ladder
- * immediately. The account page is a Server Component and cannot pass
- * an onApproved callback; this component owns that callback.
+ * Post-pay account status. Approval is the preview-page path; this only
+ * shows a checkbox as a fallback when someone paid without approving.
  */
 
 export default function PaidReleaseStatus({
@@ -29,8 +28,8 @@ export default function PaidReleaseStatus({
     if (data?.approvedAt) setApprovedAtLocal(data.approvedAt);
   }
 
-  const showCheckbox =
-    !approved && status !== 'pr_sent' && status !== 'failed' && status !== 'refunded';
+  const showFallbackCheckbox =
+    !approved && status === 'paid';
 
   return (
     <>
@@ -43,16 +42,7 @@ export default function PaidReleaseStatus({
         </div>
       ) : null}
 
-      {showCheckbox ? (
-        <div className="max-w-2xl">
-          <div className="mb-3">
-            <a href={previewHref} className="btn btn-ghost text-[0.88rem]">
-              ← Review your press release first
-            </a>
-          </div>
-          <ApprovalCheckbox onApproved={handleApproved} />
-        </div>
-      ) : approved ? (
+      {approved ? (
         <div
           className="max-w-2xl rounded-[1.5rem] p-5"
           style={{
@@ -65,14 +55,22 @@ export default function PaidReleaseStatus({
           </p>
           <p className="mt-1 text-[0.82rem] text-white/50">
             You approved this press release
-            {approvedAtLocal ? ` on ${new Date(approvedAtLocal).toLocaleDateString()}` : ''}. It is
-            queued for manual vendor submission.
+            {approvedAtLocal ? ` on ${new Date(approvedAtLocal).toLocaleDateString()}` : ''}.
+            {status === 'pr_sent'
+              ? ' It has been submitted to the vendor.'
+              : ' It is queued for manual vendor submission.'}
           </p>
-          {status === 'pr_sent' && (
-            <p className="mt-2 text-[0.82rem] text-echo-mint/80">
-              Your press release has been submitted to the vendor.
-            </p>
-          )}
+        </div>
+      ) : showFallbackCheckbox ? (
+        <div className="max-w-2xl">
+          <p className="mb-3 text-[0.88rem] leading-relaxed text-white/50">
+            This release is paid but not approved yet.{' '}
+            <a href={previewHref} className="text-echo-mint/85 underline-offset-4 hover:underline">
+              Review the draft
+            </a>
+            , then approve it here.
+          </p>
+          <ApprovalCheckbox onApproved={handleApproved} context="account" />
         </div>
       ) : null}
     </>

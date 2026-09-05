@@ -9,7 +9,7 @@ const STEPS = [
   { key: 'draft', label: 'Brief submitted', desc: 'Your information has been received.' },
   { key: 'writing', label: 'Writing in progress', desc: 'Your press release is being composed.' },
   { key: 'ready', label: 'Ready to read', desc: 'Your draft is ready for review.' },
-  { key: 'paid', label: 'Payment confirmed', desc: 'Payment received. Review your press release above.' },
+  { key: 'paid', label: 'Payment confirmed', desc: 'Payment received.' },
   { key: 'approved', label: 'Approved', desc: 'You approved the release. Awaiting manual vendor submission.' },
   { key: 'pr_sent', label: 'PR sent', desc: 'Your press release has been submitted to the vendor.' },
 ];
