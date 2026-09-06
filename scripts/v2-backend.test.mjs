@@ -16,7 +16,7 @@ import {
 } from '../lib/codes.js';
 import { inferStepFromLead, ladderState, pathForStep, resolveFurthestStep, hasComposeDraft } from '../lib/progress.js';
 import { createRateLimiter } from '../lib/rate-limit.js';
-import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
+import { isPrivateIPv4, isPrivateIPv6, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
 import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
@@ -1131,3 +1131,409 @@ test('no article → compose fails with honest error, brief preserved', () => {
   assert.ok(!completeSrc.includes('DEMO_DRAFT'), 'no DEMO_DRAFT fallback');
 });
 
+
+// ---------------------------------------------------------------------------
+// Group A: brief wiring (article sources, logo upload, compose-run linkage)
+// ---------------------------------------------------------------------------
+import { sourcesToBriefPatch as srcPatch } from '../lib/brief-shape.js';
+import { readFileSync as rfsA } from 'node:fs';
+import { fileURLToPath as fUrlA } from 'node:url';
+import { dirname as dnA, join as jnA } from 'node:path';
+
+const ROOT_A = jnA(dnA(fUrlA(import.meta.url)), '..');
+const readA = (p) => rfsA(jnA(ROOT_A, p), 'utf8');
+
+test('sourcesToBriefPatch: pasted text becomes articleText with source=paste', () => {
+  const patch = srcPatch([{ type: 'text', value: 'Acme opened a second depot.' }]);
+  assert.equal(patch.articleText, 'Acme opened a second depot.');
+  assert.equal(patch.articleSource, 'paste');
+  assert.equal(patch.articleUrl, '');
+});
+
+test('sourcesToBriefPatch: url source round-trips through articleUrl', () => {
+  const patch = srcPatch([{ type: 'url', value: '  https://example.com/news  ' }]);
+  assert.equal(patch.articleUrl, 'https://example.com/news');
+  assert.equal(patch.articleText, '');
+});
+
+test('sourcesToBriefPatch: a PDF filename is never written into articleText', () => {
+  const patch = srcPatch([{ type: 'file', value: 'press-notes.pdf', meta: '84 KB · PDF' }]);
+  assert.equal(patch.articleText, '', 'filename must not masquerade as article text');
+  assert.equal(patch.articleSource, 'pdf');
+});
+
+test('sourcesToBriefPatch: removing every source clears the stored article', () => {
+  const patch = srcPatch([]);
+  assert.equal(patch.articleText, '');
+  assert.equal(patch.articleUrl, '');
+  assert.equal(patch.articleSource, '');
+  // articleText/articleUrl are present-but-empty so sanitizeLeadFields clears them
+  assert.ok('articleText' in patch && 'articleUrl' in patch);
+});
+
+test('sourcesToBriefPatch: text wins over a co-present PDF, and is tolerant of junk', () => {
+  const both = srcPatch([{ type: 'file', value: 'a.pdf' }, { type: 'text', value: 'real text' }]);
+  assert.equal(both.articleText, 'real text');
+  assert.equal(both.articleSource, 'paste');
+  assert.deepEqual(srcPatch(null), { articleUrl: '', articleText: '', articleSource: '' });
+  assert.deepEqual(srcPatch([null, undefined]), { articleUrl: '', articleText: '', articleSource: '' });
+});
+
+test('BriefForm: article sources are persisted, not just held in React state', () => {
+  const src = readA('components/funnel/BriefForm.jsx');
+  assert.match(src, /sourcesToBriefPatch/, 'must map sources back to brief fields');
+  const adds = src.match(/persist\(sourcesToBriefPatch\(next\)\)/g) || [];
+  assert.ok(adds.length >= 2, 'both onAdd and onRemove must persist the source list');
+});
+
+test('BriefForm: compose flushes pending edits and refuses to run on a failed save', () => {
+  const src = readA('components/funnel/BriefForm.jsx');
+  const complete = src.slice(src.indexOf('async function complete('), src.indexOf('if (composing)'));
+  assert.match(complete, /clearTimeout\(debounce\.current\)/, 'must flush the 2s debounce');
+  assert.match(complete, /await persist\(/, 'must await a final save before composing');
+  assert.match(complete, /if \(!saved\) return/, 'must not compose from stale server state');
+});
+
+test('BriefForm: the uploaded logo is sent to /api/logo', () => {
+  const src = readA('components/funnel/BriefForm.jsx');
+  assert.match(src, /fetch\('\/api\/logo', \{ method: 'POST', body \}\)/);
+  assert.match(src, /body\.append\('logo', file\)/);
+  assert.doesNotMatch(src, /<LogoUpload onChange=\{setLogo\}/, 'logo must not dead-end in state');
+});
+
+test('LogoUpload: SVG is rejected client-side to match server validation', () => {
+  const src = readA('components/funnel/LogoUpload.jsx');
+  const okTypes = src.slice(src.indexOf('const OK_TYPES'), src.indexOf('\n', src.indexOf('const OK_TYPES')));
+  assert.doesNotMatch(okTypes, /svg/i, 'SVG is stored public and would be renderable');
+  assert.match(src, /image\/png/);
+  const copy = readA('lib/funnel.js');
+  assert.doesNotMatch(copy.slice(copy.indexOf('wrongType'), copy.indexOf('wrongType') + 120), /SVG/);
+});
+
+test('brief/complete: the compose run id is written onto the lead for checkout', () => {
+  const route = readA('app/api/brief/complete/route.js');
+  assert.match(route, /setCurrentComposeRun\(lead\.id, composeRun\.id\)/);
+  const leads = readA('lib/leads.js');
+  assert.match(leads, /export async function setCurrentComposeRun/);
+  assert.match(leads, /current_compose_run_id = \$\{composeRunId\}/);
+  // checkout reads exactly what brief/complete now writes
+  assert.match(readA('app/api/checkout/route.js'), /current_compose_run_id/);
+});
+
+// ---------------------------------------------------------------------------
+// PDF article intake: dependency-free extraction (lib/pdf-text.js)
+// ---------------------------------------------------------------------------
+import { deflateSync } from 'node:zlib';
+import { extractPdfText, isPdf } from '../lib/pdf-text.js';
+
+/** Build a real PDF whose single content stream holds `content`. */
+function makePdf(content, { compress = true } = {}) {
+  const body = compress ? deflateSync(Buffer.from(content, 'latin1')) : Buffer.from(content, 'latin1');
+  return Buffer.concat([
+    Buffer.from(
+      `%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n4 0 obj\n<< /Length ${body.length}` +
+        `${compress ? ' /Filter /FlateDecode' : ''} >>\nstream\n`,
+      'latin1'
+    ),
+    body,
+    Buffer.from('\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n', 'latin1'),
+  ]);
+}
+
+const LEDE = 'DULUTH, Minn. — Harbor Freight Logistics said Tuesday that it will open a second depot.';
+
+test('pdf: text is extracted from a Flate-compressed content stream', () => {
+  const r = extractPdfText(makePdf(`BT /F1 12 Tf 72 720 Td (${LEDE}) Tj ET`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Harbor Freight Logistics said Tuesday/);
+});
+
+test('pdf: uncompressed content streams work too', () => {
+  const r = extractPdfText(makePdf(`BT (${LEDE}) Tj ET`, { compress: false }));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /second depot/);
+});
+
+test('pdf: TJ kerning is rendered as word gaps, not run-together text', () => {
+  const words = ['Quarterly', 'revenue', 'rose', 'eighteen', 'percent', 'across', 'every', 'region', 'again'];
+  const arr = words.map((w) => `(${w}) -250 `).join('');
+  const r = extractPdfText(makePdf(`BT [${arr}] TJ ET`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Quarterly revenue rose eighteen percent/);
+});
+
+test('pdf: literal escapes and octal codes decode per spec', () => {
+  const content =
+    'BT (Escaped ' + String.raw`\(parens\)` + ' plus octal ' + String.raw`\101\102\103` +
+    ' and enough further words to clear the minimum length gate) Tj ET';
+  const r = extractPdfText(makePdf(content));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Escaped \(parens\) plus octal ABC/);
+});
+
+test('pdf: hex strings decode', () => {
+  // "The board approved the new distribution facility this week in Duluth."
+  const hex = Buffer.from(
+    'The board approved the new distribution facility this week in Duluth.',
+    'latin1'
+  ).toString('hex');
+  const r = extractPdfText(makePdf(`BT <${hex}> Tj ET`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /The board approved the new distribution facility/);
+});
+
+test('pdf: Td positioning produces line breaks between paragraphs', () => {
+  const r = extractPdfText(
+    makePdf(
+      'BT (Harbor Freight Incorporated of Duluth Minnesota) Tj ' +
+        '0 -14 Td (announced record quarterly earnings on Tuesday morning.) Tj ET'
+    )
+  );
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Harbor Freight[\s\S]*\n[\s\S]*announced record quarterly/);
+});
+
+test('pdf: a scanned page reports no_text_layer rather than inventing text', () => {
+  // An image XObject draw with no text operators — what a scan actually is.
+  const r = extractPdfText(makePdf('q 612 0 0 792 0 0 cm /Im0 Do Q', { compress: false }));
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'no_text_layer');
+});
+
+test('pdf: CID glyph ids are detected as unreadable, never returned as mojibake', () => {
+  const glyphs = Array.from({ length: 60 }, (_, i) => (i + 1).toString(16).padStart(4, '0')).join('');
+  const r = extractPdfText(makePdf(`BT <${glyphs}> Tj ET`));
+  assert.equal(r.ok, false, 'glyph ids must not be passed off as article text');
+  assert.equal(r.reason, 'no_text_layer');
+});
+
+test('pdf: non-PDF input is rejected on its bytes, not its filename', () => {
+  assert.equal(extractPdfText(Buffer.from('plain text pretending to be a pdf')).reason, 'not_pdf');
+  assert.equal(isPdf(Buffer.from('hello')), false);
+  assert.equal(isPdf(Buffer.from('%PDF-1.7\nrest')), true);
+});
+
+test('pdf: extraction is capped so a huge PDF cannot blow the 50k storage clip', () => {
+  const para = `BT (${LEDE} ${'Filler sentence for length. '.repeat(40)}) Tj ET `;
+  const r = extractPdfText(makePdf(para.repeat(60)));
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.ok(r.text.length <= 60_000, `expected cap, got ${r.text.length}`);
+});
+
+test('sourcesToBriefPatch: an extracted PDF carries its text through as source=pdf', () => {
+  const patch = srcPatch([{ type: 'file', value: 'release.pdf', text: LEDE }]);
+  assert.equal(patch.articleText, LEDE);
+  assert.equal(patch.articleSource, 'pdf');
+  assert.notEqual(patch.articleText, 'release.pdf');
+});
+
+test('article/upload: extraction endpoint is authenticated and writes nothing itself', () => {
+  const route = readA('app/api/article/upload/route.js');
+  assert.match(route, /getSession\(\)/);
+  assert.match(route, /if \(!session\?\.email\)/, 'must require a session');
+  assert.match(route, /isPdf\(buffer\)/, 'must verify magic bytes, not the declared type');
+  assert.match(route, /extractPdfText\(buffer\)/);
+  // one write path: the route returns text, the form saves it via PATCH /api/brief
+  assert.doesNotMatch(route, /upsertLead|saveLeadFromPayload/);
+});
+
+test('ArticleDrop: a PDF is uploaded for extraction and the text rides on the source', () => {
+  const src = readA('components/funnel/ArticleDrop.jsx');
+  assert.match(src, /fetch\('\/api\/article\/upload', \{ method: 'POST', body \}\)/);
+  assert.match(src, /text: data\.text/, 'the extracted text must reach the source');
+  // the dead hidden mirror fields that made the loss look wired up are gone
+  assert.doesNotMatch(src, /name="articleText"/);
+  assert.doesNotMatch(src, /name="articleSource"/);
+});
+
+// ---------------------------------------------------------------------------
+// Security hardening. Findings 4 (SSRF), 5 (brief overwrite), 12 (SVG logos).
+// ---------------------------------------------------------------------------
+
+test('SSRF: IPv6 loopback reaches us in every embedding format', () => {
+  // WHATWG URL re-serialises [::ffff:127.0.0.1] to the hex form [::ffff:7f00:1],
+  // so the dotted spelling is what an attacker types and the hex spelling is
+  // what the SSRF guard actually sees. Both must land on 127.0.0.1.
+  const blocked = [
+    '::ffff:7f00:1',        // IPv4-mapped, hex — the reported bypass
+    '::ffff:127.0.0.1',     // IPv4-mapped, dotted
+    '::ffff:0:7f00:1',      // IPv4-translated ::ffff:0:0:0/96
+    '::ffff:0:127.0.0.1',
+    '::7f00:1',             // deprecated IPv4-compatible ::/96
+    '::127.0.0.1',
+    '::ffff:a00:1',         // 10.0.0.1
+    '::ffff:c0a8:1',        // 192.168.0.1
+    '::ffff:a9fe:a9fe',     // 169.254.169.254 cloud metadata
+    '64:ff9b::7f00:1',      // NAT64 well-known prefix
+    '64:ff9b::169.254.169.254',
+    '64:ff9b:1::1',         // NAT64 local-use prefix
+    '2002:7f00:1::',        // 6to4 wrapping loopback
+  ];
+  for (const ip of blocked) {
+    assert.equal(isPrivateIPv6(ip), true, `${ip} must be private`);
+    assert.equal(isPrivateIp(ip), true, `isPrivateIp(${ip}) must be private`);
+  }
+});
+
+test('SSRF: link-local covers the whole fe80::/10, not just fe80/feb0/febf', () => {
+  // fe80::/10 spans fe80–febf. The old prefix-string check missed everything
+  // in between, so fe81:: through febe:: were treated as public.
+  const blocked = ['fe80::1', 'fe81::1', 'fe8f::1', 'fe90::1', 'fe9a::1', 'fea0::1',
+    'feaf::1', 'feb1::1', 'feb5::1', 'febe::1', 'febf::1'];
+  for (const ip of blocked) {
+    assert.equal(isPrivateIPv6(ip), true, `${ip} is inside fe80::/10`);
+  }
+  // fe7f:: sits just below the range; fec0::/10 is deprecated site-local.
+  assert.equal(isPrivateIPv6('fe7f::1'), false, 'fe7f:: is outside fe80::/10');
+  assert.equal(isPrivateIPv6('fec0::1'), true, 'fec0::/10 site-local is private');
+});
+
+test('SSRF: reserved IPv6 ranges stay blocked and junk fails closed', () => {
+  for (const ip of ['::', '::1', '0:0:0:0:0:0:0:1', 'fc00::1', 'fd12:3456::1',
+    'ff02::1', 'ff00::', 'fe80::1%eth0']) {
+    assert.equal(isPrivateIPv6(ip), true, `${ip} must be private`);
+  }
+  // Unparseable input is treated as private rather than waved through.
+  for (const junk of ['', 'not-an-ip', ':::1', '1:2:3:4:5:6:7:8:9', 'gggg::1', '12345::1']) {
+    assert.equal(isPrivateIPv6(junk), true, `${JSON.stringify(junk)} fails closed`);
+  }
+});
+
+test('SSRF: real public IPv6 addresses are not over-blocked', () => {
+  const allowed = [
+    '2606:4700::1111',            // Cloudflare
+    '2001:4860:4860::8888',       // Google
+    '2a00:1450:4001:81b::200e',   // Google EU
+    '2620:fe::fe',                // Quad9
+    '1:2:3:4:5:6:7:8',
+    '::ffff:8.8.8.8',             // IPv4-mapped, but a public IPv4
+    '::ffff:808:808',
+    '::ffff:0:8.8.8.8',
+    '64:ff9b::8.8.8.8',           // NAT64 wrapping a public IPv4
+    '2002:808:808::',             // 6to4 wrapping a public IPv4
+  ];
+  for (const ip of allowed) {
+    assert.equal(isPrivateIPv6(ip), false, `${ip} must stay public`);
+  }
+  // The IPv4 classifier is untouched.
+  assert.equal(isPrivateIPv4('127.0.0.1'), true);
+  assert.equal(isPrivateIPv4('8.8.8.8'), false);
+});
+
+test('SSRF: parsePublicHttpUrl rejects the bracketed IPv6 loopback attack', () => {
+  // POST /api/articles/resolve {"url":"http://[::ffff:7f00:1]:8080/"} used to
+  // sail through and get fetched against loopback.
+  for (const url of ['http://[::ffff:7f00:1]:8080/', 'http://[::ffff:127.0.0.1]/',
+    'http://[::7f00:1]/', 'http://[::ffff:0:7f00:1]/', 'http://[64:ff9b::7f00:1]/',
+    'http://[fe9a::1]/', 'http://[::ffff:a9fe:a9fe]/latest/meta-data/']) {
+    assert.equal(parsePublicHttpUrl(url).error, 'blocked', `${url} must be blocked`);
+  }
+  // Legitimate targets still resolve.
+  assert.equal(parsePublicHttpUrl('https://[2606:4700::1111]/x').error, undefined);
+  assert.equal(
+    parsePublicHttpUrl('https://news.example/article').url.href,
+    'https://news.example/article'
+  );
+});
+
+test('ownership: auth/start will not overwrite a verified lead pre-auth', () => {
+  const startSrc = rfs(jn(HERE, '../app/api/auth/start/route.js'), 'utf8');
+  // The route must look the lead up and consult the session before writing.
+  assert.ok(startSrc.includes('getLeadByEmail'), 'looks the existing lead up');
+  assert.ok(startSrc.includes('getSession'), 'consults the session cookie');
+  assert.ok(startSrc.includes('verified_at'), 'gates on whether the lead is claimed');
+  assert.ok(
+    startSrc.includes('upsertLead(email, mayWrite ? leadFields : {})'),
+    'caller-supplied fields are dropped unless the caller owns the address'
+  );
+  // The gate has to run before the write, not after it.
+  assert.ok(
+    startSrc.indexOf('const mayWrite') < startSrc.indexOf('await upsertLead'),
+    'ownership check precedes the upsert'
+  );
+  assert.ok(
+    !startSrc.includes('await upsertLead(email, leadFields)'),
+    'no ungated upsert of caller-supplied fields survives'
+  );
+  // Legitimate flows around the gate are untouched.
+  assert.ok(startSrc.includes('body?.resend === false'), 'VerifyForm saveProfile path kept');
+  assert.ok(startSrc.includes('hasLiveUnusedLink'), 'live-code check kept');
+  assert.ok(startSrc.includes('issueMagicLink'), 'a login code is still issued');
+});
+
+test('ownership: post-verification routes still persist the brief', () => {
+  // The pre-auth write is gated, so the authenticated paths must remain the
+  // ones that actually save prefill — otherwise the funnel silently loses data.
+  const verifySrc = rfs(jn(HERE, '../app/api/auth/verify/route.js'), 'utf8');
+  const callbackSrc = rfs(jn(HERE, '../app/api/auth/callback/route.js'), 'utf8');
+  assert.ok(verifySrc.includes('await upsertLead('), 'verify persists prefill');
+  assert.ok(
+    verifySrc.indexOf('await consumeMagicCode(') < verifySrc.indexOf('await upsertLead('),
+    'verify writes only after consuming the code'
+  );
+  assert.ok(callbackSrc.includes('await upsertLead('), 'callback persists prefill');
+  assert.ok(
+    callbackSrc.indexOf('await consumeMagicLink(') < callbackSrc.indexOf('await upsertLead('),
+    'callback writes only after consuming the link'
+  );
+});
+
+// Smallest buffers that carry each format's magic bytes.
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+const WEBP_MAGIC = Buffer.concat([
+  Buffer.from('RIFF'),
+  Buffer.from([0x1a, 0x00, 0x00, 0x00]),
+  Buffer.from('WEBPVP8 '),
+]);
+const SVG_PAYLOAD = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+);
+
+test('logo upload: SVG is rejected outright', () => {
+  const res = validateLogoBuffer(SVG_PAYLOAD, 'image/svg+xml', SVG_PAYLOAD.length);
+  assert.equal(res.ok, false, 'SVG must not be storable');
+  assert.ok(!/svg/i.test(res.error), `error copy must not still offer SVG: ${res.error}`);
+  // Renaming the MIME does not help — the bytes carry no raster signature.
+  assert.equal(validateLogoBuffer(SVG_PAYLOAD, 'image/png', SVG_PAYLOAD.length).ok, false);
+  assert.equal(validateLogoBuffer(SVG_PAYLOAD, 'image/webp', SVG_PAYLOAD.length).ok, false);
+});
+
+test('logo upload: raster formats still validate', () => {
+  assert.deepEqual(validateLogoBuffer(PNG_MAGIC, 'image/png', PNG_MAGIC.length), { ok: true });
+  assert.deepEqual(validateLogoBuffer(JPEG_MAGIC, 'image/jpeg', JPEG_MAGIC.length), { ok: true });
+  assert.deepEqual(validateLogoBuffer(WEBP_MAGIC, 'image/webp', WEBP_MAGIC.length), { ok: true });
+});
+
+test('logo upload: declared MIME must match the actual bytes', () => {
+  const mismatch = validateLogoBuffer(JPEG_MAGIC, 'image/png', JPEG_MAGIC.length);
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.error, /does not match/);
+  assert.equal(validateLogoBuffer(PNG_MAGIC, 'image/webp', PNG_MAGIC.length).ok, false);
+  // A buffer too short to hold the signature cannot satisfy it.
+  assert.equal(validateLogoBuffer(Buffer.from([0x89]), 'image/png', 1).ok, false);
+  // Types outside the allowlist never reach the signature check.
+  for (const mime of ['image/gif', 'text/html', 'application/pdf', '', undefined]) {
+    assert.equal(
+      validateLogoBuffer(PNG_MAGIC, mime, PNG_MAGIC.length).ok,
+      false,
+      `${mime} rejected`
+    );
+  }
+  // Size cap unchanged.
+  assert.equal(validateLogoBuffer(PNG_MAGIC, 'image/png', 9 * 1024 * 1024).ok, false);
+});
+
+test('logo upload: no SVG path survives in storage or the picker', () => {
+  const storeSrc = rfs(jn(HERE, '../lib/logo-storage.js'), 'utf8');
+  assert.ok(!storeSrc.includes("'image/svg+xml'"), 'svg mime is gone from logo-storage');
+  assert.ok(
+    !storeSrc.includes('return true; // unknown mime'),
+    'an unrecognised mime no longer skips the signature check'
+  );
+  // The picker must not offer a format the server will bounce.
+  const pickerSrc = rfs(jn(HERE, '../components/funnel/LogoUpload.jsx'), 'utf8');
+  assert.ok(!pickerSrc.includes('image/svg'), 'LogoUpload no longer accepts SVG');
+  const onboardingSrc = rfs(jn(HERE, '../components/OnboardingForm.jsx'), 'utf8');
+  assert.ok(!onboardingSrc.includes('image/svg'), 'OnboardingForm no longer accepts SVG');
+});

@@ -9,6 +9,7 @@ import {
   briefToFormState,
   hasResumableBrief,
   mergeBriefFormState,
+  sourcesToBriefPatch,
 } from '../../lib/brief-shape';
 import { BRIEF, FIELDS, ANNOUNCEMENT_CHIPS } from '../../lib/funnel';
 import { ArrowUpRight } from '../Icons';
@@ -41,6 +42,7 @@ export default function BriefForm({ initial = {} }) {
   });
   const [sources, setSources] = useState(initialSources);
   const [logo, setLogo] = useState(null);
+  const [logoError, setLogoError] = useState(null);
   const [save, setSave] = useState('idle'); // idle | saving | failed
   const [errors, setErrors] = useState({});
   const [showNotes, setShowNotes] = useState(Boolean(initial.notes));
@@ -119,12 +121,46 @@ export default function BriefForm({ initial = {} }) {
       });
       if (res.status === 401) {
         router.replace('/start');
-        return;
+        return false;
       }
       if (!res.ok) throw new Error('save failed');
       setSave('idle');
+      return true;
     } catch {
       setSave('failed');
+      return false;
+    }
+  }
+
+  /**
+   * The logo is a binary and cannot ride the JSON autosave, so it goes straight
+   * to its own endpoint. Returning a string tells LogoUpload to surface it as
+   * the field error and drop the success chip — otherwise a failed upload still
+   * looks like it worked.
+   */
+  async function uploadLogo(file) {
+    if (!file) return undefined;
+    setLogo(file);
+    setLogoError(null);
+    setSave('saving');
+    try {
+      const body = new FormData();
+      body.append('logo', file);
+      const res = await fetch('/api/logo', { method: 'POST', body });
+      if (res.status === 401) {
+        router.replace('/start');
+        return undefined;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true) throw new Error(data.error || 'We could not save your logo.');
+      setSave('idle');
+      return undefined;
+    } catch (err) {
+      setLogo(null);
+      setSave('failed');
+      const message = err?.message || 'We could not save your logo.';
+      setLogoError(message);
+      return message;
     }
   }
 
@@ -161,6 +197,12 @@ export default function BriefForm({ initial = {} }) {
       document.getElementById(first)?.focus({ preventScroll: true });
       return;
     }
+    // ComposeWait POSTs /api/brief/complete with no body: it composes purely
+    // from stored lead state. Anything still sitting in the 2s debounce, and
+    // the whole `sources` list, has to land server-side first.
+    clearTimeout(debounce.current);
+    const saved = await persist({ ...values, ...sourcesToBriefPatch(sources) });
+    if (!saved) return; // save chip reads "failed" — don't compose from stale data
     setComposing(true);
   }
 
@@ -265,7 +307,7 @@ export default function BriefForm({ initial = {} }) {
                 onBlur={blurSave('phone')}
               />
               <div className="sm:col-span-2">
-                <LogoUpload onChange={setLogo} />
+                <LogoUpload onChange={uploadLogo} error={logoError} />
               </div>
             </div>
           </section>
@@ -277,13 +319,19 @@ export default function BriefForm({ initial = {} }) {
             <div className="mt-6">
               <ArticleDrop
                 sources={sources}
-                onAdd={(s) =>
-                  setSources((prev) => [
-                    ...prev,
+                onAdd={(s) => {
+                  const next = [
+                    ...sources,
                     { ...s, display: s.type === 'text' ? 'Article text' : s.value },
-                  ])
-                }
-                onRemove={(i) => setSources((prev) => prev.filter((_, x) => x !== i))}
+                  ];
+                  setSources(next);
+                  persist(sourcesToBriefPatch(next));
+                }}
+                onRemove={(i) => {
+                  const next = sources.filter((_, x) => x !== i);
+                  setSources(next);
+                  persist(sourcesToBriefPatch(next));
+                }}
               />
             </div>
 

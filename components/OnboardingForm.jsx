@@ -134,7 +134,7 @@ export default function OnboardingForm({
               }}
             >
               <span className="text-[0.88rem] text-white/55">
-                {logoName || 'PNG or SVG, up to 5 MB'}
+                {logoName || 'PNG, JPEG, or WebP, up to 5 MB'}
               </span>
               <span className="btn-nib" style={{ background: 'rgba(255,255,255,0.08)' }}>
                 <ArrowUpRight />
@@ -143,7 +143,7 @@ export default function OnboardingForm({
                 id="logo"
                 name="logo"
                 type="file"
-                accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                accept="image/png,image/jpeg,image/webp"
                 className="sr-only"
                 onChange={(e) => setLogoName(e.target.files?.[0]?.name || '')}
               />

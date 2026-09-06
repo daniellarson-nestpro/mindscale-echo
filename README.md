@@ -279,7 +279,7 @@ still a hook (`await logo.arrayBuffer()` → S3, R2, Supabase Storage, or Upload
 
 Collected fields: company name, website, contact name, contact email, article URL,
 announcement type, preferred quote + attribution, free-form notes, and an optional logo
-(≤ 5 MB, PNG/JPEG/SVG/WebP).
+(≤ 5 MB, PNG/JPEG/WebP — SVG is rejected as a stored-XSS vector).
 
 ---
 

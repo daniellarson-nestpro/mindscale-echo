@@ -18,6 +18,7 @@ import {
   loadOrdersForEmail,
   markComposeFinished,
   saveComposeSuccess,
+  setCurrentComposeRun,
   upsertLead,
 } from '../../../../lib/leads';
 import { callN8nCompose } from '../../../../lib/n8n';
@@ -162,6 +163,10 @@ export async function POST() {
     composeRun = await createComposeRun({ leadId: lead.id, requestPayload: payload });
     if (composeRun?.id) {
       payload.composeRunId = composeRun.id;
+      // Checkout reads leads.current_compose_run_id to stamp orders.compose_run_id.
+      // Without this write that column is always NULL and the order -> compose-run
+      // audit link never exists.
+      await setCurrentComposeRun(lead.id, composeRun.id);
     }
   } catch (err) {
     console.error('[brief/complete] compose run snapshot failed:', err?.message);

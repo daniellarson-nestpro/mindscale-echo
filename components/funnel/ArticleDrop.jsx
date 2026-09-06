@@ -14,6 +14,7 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
   const [draft, setDraft] = useState('');
   const [hint, setHint] = useState(null);
   const [dragging, setDragging] = useState(false);
+  const [reading, setReading] = useState(false);
   const fileRef = useRef(null);
   const areaRef = useRef(null);
 
@@ -32,7 +33,12 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
     if (areaRef.current) areaRef.current.style.height = 'auto';
   };
 
-  const takeFile = (file) => {
+  /**
+   * The PDF's words are what the release is written from, so the file goes to
+   * the server for extraction and the source carries the text back. Attaching
+   * the File alone would leave the brief with nothing but a filename.
+   */
+  const takeFile = async (file) => {
     if (!file) return;
     if (file.type !== 'application/pdf') {
       setHint('That needs to be a PDF. If you have the text, paste it instead.');
@@ -42,8 +48,29 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
       setHint('PDF must be under 20 MB.');
       return;
     }
+
     setHint(null);
-    onAdd({ type: 'file', value: file.name, file, meta: `${(file.size / 1024).toFixed(0)} KB · PDF` });
+    setReading(true);
+    try {
+      const body = new FormData();
+      body.append('article', file);
+      const res = await fetch('/api/article/upload', { method: 'POST', body });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true || !data.text) {
+        throw new Error(data.error || 'We could not read that PDF. Please paste the article text instead.');
+      }
+      onAdd({
+        type: 'file',
+        value: file.name,
+        text: data.text,
+        meta: `${data.words.toLocaleString()} words · PDF`,
+      });
+    } catch (err) {
+      setHint(err?.message || 'We could not read that PDF. Please paste the article text instead.');
+    } finally {
+      setReading(false);
+      if (fileRef.current) fileRef.current.value = ''; // let the same file be retried
+    }
   };
 
   const grow = (el) => {
@@ -110,8 +137,10 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
+            disabled={reading}
             aria-label="Attach a PDF"
-            title="Upload PDF"
+            aria-busy={reading}
+            title={reading ? 'Reading your PDF…' : 'Upload PDF'}
             className="mb-[0.15rem] flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white/55 transition-all duration-500 ease-haptic hover:text-white"
             style={{
               background: 'rgba(255,255,255,0.04)',
@@ -137,7 +166,13 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
           PDF or pasted text only. Minimum {MIN_PASTE_LENGTH} characters of article content.
         </p>
 
-        {(hint || error) && (
+        {reading && (
+          <p aria-live="polite" className="mt-3 text-[0.82rem] leading-relaxed text-white/55">
+            Reading your PDF…
+          </p>
+        )}
+
+        {!reading && (hint || error) && (
           <p role="alert" className="mt-3 text-[0.82rem] leading-relaxed text-amber-200/80">
             {hint || error}
           </p>
@@ -198,19 +233,9 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
           </ul>
         )}
 
-        {/* Hidden fields for form submission */}
-        <input type="hidden" name="articleUrl" value="" />
-        <textarea
-          name="articleText"
-          hidden
-          readOnly
-          value={sources.find((s) => s.type === 'text')?.value || ''}
-        />
-        <input
-          type="hidden"
-          name="articleSource"
-          value={sources.length > 0 ? (sources.find((s) => s.type === 'file') ? 'pdf' : 'paste') : ''}
-        />
+        {/* This form is never natively submitted — BriefForm persists through
+            PATCH /api/brief — so there are deliberately no hidden mirror fields
+            here. Earlier ones silently went nowhere. */}
         <input
           ref={fileRef}
           type="file"
