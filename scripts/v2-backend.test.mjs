@@ -1659,3 +1659,299 @@ test('composer: the SDK is imported in exactly one module', () => {
   assert.match(client, /json_schema/);
   assert.match(client, /refusal/, 'a policy decline must not read as a draft');
 });
+
+// ---------------------------------------------------------------------------
+// Track A: owner alerts survive customer data, and customers actually hear back
+// ---------------------------------------------------------------------------
+import {
+  TRANSIENT_COMPOSE_ERRORS,
+  escapeTelegramMarkdown as tgEsc,
+} from '../lib/notify.js';
+
+test('telegram: customer values that would break Markdown are escaped', () => {
+  // An unescaped underscore opens an italic run that never closes; Telegram
+  // answers 400 and the owner never learns the draft is ready.
+  assert.equal(tgEsc('sal_marino@x.com'), 'sal\\_marino@x.com');
+  assert.equal(tgEsc("*Sal's Pizza*"), "\\*Sal's Pizza\\*");
+  assert.equal(tgEsc('Acme [MD] (East)'), 'Acme \\[MD\\] \\(East\\)');
+  assert.equal(tgEsc('back`tick'), 'back\\`tick');
+});
+
+test('telegram: escaping leaves ordinary text and empties alone', () => {
+  assert.equal(tgEsc('Harbor Freight Logistics'), 'Harbor Freight Logistics');
+  assert.equal(tgEsc(''), '');
+  assert.equal(tgEsc(null), '');
+  assert.equal(tgEsc(undefined), '');
+  assert.equal(tgEsc(42), '42');
+});
+
+test('telegram: every interpolated value in an alert goes through the escaper', () => {
+  const src = readA('lib/notify.js');
+  // Only the Telegram `text` bodies are Markdown-parsed. The `subject` and
+  // `plain` email strings beside them are plain text and must NOT be escaped.
+  const blocks = [...src.matchAll(/const text =([\s\S]*?);\n/g)].map((m) => m[1]);
+  assert.ok(blocks.length >= 5, 'expected the alert templates, found ' + blocks.length);
+  let checked = 0;
+  for (const block of blocks) {
+    for (const m of block.matchAll(/\$\{([^}]+)\}/g)) {
+      checked += 1;
+      const expr = m[1].trim();
+      assert.ok(expr.startsWith('md('), 'unescaped interpolation in a Telegram alert: ' + expr);
+    }
+  }
+  assert.ok(checked >= 10, 'expected several interpolations, checked ' + checked);
+});
+
+test('telegram: a formatting rejection falls back to unformatted delivery', () => {
+  const src = readA('lib/notify.js');
+  assert.match(src, /if \(res\.status === 400\) return sendTelegramPlain\(text\)/);
+  const plain = src.slice(src.indexOf('async function sendTelegramPlain'));
+  assert.doesNotMatch(plain.slice(0, 600), /parse_mode/, 'the retry must not re-parse');
+});
+
+test('notifications: all four customer emails are actually wired', () => {
+  const src = readA('lib/notify.js');
+  for (const fn of [
+    'sendDraftReadyEmail',
+    'sendApprovalConfirmationEmail',
+    'sendPrSentEmail',
+    'sendComposeFailedEmail',
+  ]) {
+    // imported AND called — an import alone is what the bug looked like
+    assert.match(src, new RegExp('\\b' + fn + '\\b'), `${fn} not referenced`);
+    assert.match(src, new RegExp(fn + '\\(\\{ to:'), `${fn} imported but never called`);
+  }
+});
+
+test('notifications: pr_sent reaches the customer from the admin hook', () => {
+  const route = readA('app/api/admin/pr-sent/route.js');
+  assert.match(route, /notifyPrSent\(/, 'the release-sent promise must be kept');
+  assert.match(route, /SELECT id, email, order_status/, 'needs the address to notify');
+  assert.match(route, /\.catch\(\(\) => \{\}\)/, 'notification must not fail the transition');
+  assert.match(readA('lib/notify.js'), /export async function notifyPrSent/);
+});
+
+test('notifications: a transient compose blip does not alarm the customer', () => {
+  // They are watching ComposeWait and will retry; only actionable failures mail.
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('timeout'), true);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('network'), true);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('unavailable'), true);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('insufficient_article'), false);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('refused'), false);
+  const src = readA('lib/notify.js');
+  assert.match(src, /actionable \? sendComposeFailedEmail/);
+});
+
+test('admin/pr-sent: the secret is compared in constant time', () => {
+  const route = readA('app/api/admin/pr-sent/route.js');
+  assert.match(route, /timingSafeEqual/);
+  assert.doesNotMatch(route, /provided !== adminSecret/, 'byte-by-byte compare leaks the secret');
+  assert.match(route, /a\.length !== b\.length/, 'timingSafeEqual throws on length mismatch');
+});
+
+// ---------------------------------------------------------------------------
+// Track B: customers read sentences, not error codes or blank space
+// ---------------------------------------------------------------------------
+import { COMPOSE as COMPOSE_COPY, STEP_ARTICLE as STEP_ART } from '../lib/funnel.js';
+
+test('funnel copy: the article-resolve failure strings StartFlow reads exist', () => {
+  // Both were referenced by StartFlow and defined nowhere, so a failed resolve
+  // called setArticleError(undefined) and rendered nothing at all.
+  for (const key of ['parseFail', 'parsePartial']) {
+    assert.equal(typeof STEP_ART[key], 'string', `STEP_ARTICLE.${key} must be a string`);
+    assert.ok(STEP_ART[key].trim().length > 10, `STEP_ARTICLE.${key} must say something`);
+  }
+  const src = readA('components/funnel/StartFlow.jsx');
+  assert.match(src, /STEP_ARTICLE\.parseFail/);
+  assert.match(src, /STEP_ARTICLE\.parsePartial/);
+});
+
+test('funnel copy: compose transport errors have human wording', () => {
+  assert.ok(COMPOSE_COPY.errors, 'COMPOSE.errors must exist');
+  for (const code of ['timeout', 'network', 'unavailable', 'refused']) {
+    const text = COMPOSE_COPY.errors[code];
+    assert.equal(typeof text, 'string', `no copy for ${code}`);
+    assert.ok(text.trim().length > 20, `copy for ${code} is too thin`);
+    assert.doesNotMatch(text, /_/, `copy for ${code} still reads like an identifier`);
+  }
+});
+
+test('ComposeWait: the written message wins over the machine code', () => {
+  const src = readA('components/funnel/ComposeWait.jsx');
+  assert.match(src, /data\.message \|\| COMPOSE\.errors\[data\.error\]/);
+  // the old behaviour surfaced data.error directly
+  assert.doesNotMatch(src, /new Error\(data\.error/);
+  assert.match(src, /err\.explained/, 'only explained failures should render a reason');
+});
+
+test('ComposeWait: an unexplained failure shows no raw code at all', () => {
+  const src = readA('components/funnel/ComposeWait.jsx');
+  assert.match(src, /setFailError\(err\?\.explained \? err\.message : ''\)/);
+});
+
+test('ArticleDrop: the resolving prop StartFlow passes is actually consumed', () => {
+  const src = readA('components/funnel/ArticleDrop.jsx');
+  assert.match(src, /resolving = false/, 'must accept the prop');
+  assert.match(src, /const busy = reading \|\| resolving/, 'must fold it into the busy state');
+  assert.match(src, /Reading that link/, 'a URL fetch needs its own wording');
+  // StartFlow still passes it
+  assert.match(readA('components/funnel/StartFlow.jsx'), /resolving=\{resolving\}/);
+});
+
+
+// ---------------------------------------------------------------------------
+// Group C: shared preview links, honest rate limiting, paid-state integrity
+// ---------------------------------------------------------------------------
+
+test('preview: the shared token is the lead id, so it can resolve a lead', () => {
+  // PreviewScreen.share() hands out /preview/<previewTokenFor(lead)>?shared=1.
+  // The whole token fallback rests on that token being the lead id verbatim.
+  const id = '3f1b6a0e-9d2c-4a51-8f0b-7c2d5e9a1b34';
+  assert.equal(previewTokenFor({ id }), id);
+  assert.equal(safePreviewToken(id), id, 'a uuid survives the path-segment guard');
+  assert.equal(safePreviewToken('../../etc/passwd'), 'demo', 'garbage never reaches the lookup');
+  assert.equal(safePreviewToken(undefined), 'demo');
+});
+
+test('preview: a recipient with no session gets the draft behind the token', () => {
+  const src = readA('lib/preview-draft.js');
+  assert.match(src, /import \{[^}]*getLeadById[^}]*\} from '\.\/leads'/, 'imported from lib/leads');
+  assert.match(src, /getLeadById\(previewToken\)/, 'the token resolves a lead');
+  assert.match(
+    src,
+    /if \(!lead && previewToken !== 'demo'\)/,
+    'only when the session produced no lead of its own'
+  );
+  assert.ok(
+    src.indexOf('getLeadByEmail(session.email)') < src.indexOf('getLeadById(previewToken)'),
+    'the session lead is still looked up first and still wins'
+  );
+});
+
+test('preview: the token lookup fails soft; demo is still the demo draft', () => {
+  const src = readA('lib/preview-draft.js');
+  // leads.id is a uuid, so a well-formed but unknown token throws in Postgres.
+  const fallback = src.slice(src.indexOf("if (!lead && previewToken !== 'demo')"));
+  assert.match(
+    fallback.slice(0, 400),
+    /try \{[\s\S]*getLeadById\(previewToken\)[\s\S]*\} catch/,
+    'an unknown token must not blow up the page'
+  );
+  assert.match(src, /if \(previewToken === 'demo'\) return DEMO_DRAFT;/);
+  assert.match(src, /return draftFromBrief\(\{\}\);/, 'a miss still ends at the empty draft');
+  assert.ok(!/getLeadById\(token\)/.test(src), 'the unsanitised token never reaches the query');
+});
+
+test('auth/start: an IP-limited signup is refused, not congratulated', () => {
+  const src = readA('app/api/auth/start/route.js');
+  const fromLimit = src.slice(src.indexOf('const ip = clientIp(request);'));
+  const branch = fromLimit.slice(0, fromLimit.indexOf('const last = cooldown.get(email);'));
+  assert.match(branch, /status: 429/, 'a limited request must not answer 200');
+  assert.match(branch, /error: 'rate_limited'/, 'same vocabulary as the other limited routes');
+  assert.ok(
+    !branch.includes('return ok(email)'),
+    'no ok:true/sent:true for a code that was never issued'
+  );
+  // ok() is the only place PENDING_COOKIE is set, so refusing here also keeps
+  // the caller out of /start/verify waiting on an attempt that does not exist.
+  assert.match(src, /function ok\(email, extra\)[\s\S]*?PENDING_COOKIE/);
+});
+
+test('auth/start: the two truthful ok(email) branches are untouched', () => {
+  const src = readA('app/api/auth/start/route.js');
+  assert.equal(
+    (src.match(/return ok\(email\);/g) || []).length,
+    2,
+    'saveProfile and cooldown still answer ok — only the IP branch changed'
+  );
+  const saveProfile = src.indexOf('body?.resend === false');
+  const limited = src.indexOf('ipLimit.check');
+  const cool = src.indexOf('Date.now() - last < COOLDOWN_MS');
+  assert.ok(saveProfile > -1 && limited > saveProfile && cool > limited, 'branch order preserved');
+  assert.match(
+    src.slice(saveProfile, limited),
+    /return ok\(email\);/,
+    'the profile-save path keeps the live code and still answers ok'
+  );
+  assert.match(
+    src.slice(cool),
+    /return ok\(email\);/,
+    'the cooldown path still answers ok — there a code really was just sent'
+  );
+  assert.match(src, /return ok\(email, \{ pendingToken \}\);/, 'the sent path is unchanged');
+});
+
+test('auth/start: sent:true is a claim the ninth caller behind a NAT cannot be told', () => {
+  assert.deepEqual(startOkBody('sal@example.com'), {
+    ok: true,
+    email: 'sal@example.com',
+    sent: true,
+  });
+  const limiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 8 });
+  for (let i = 0; i < 8; i += 1) {
+    assert.equal(limiter.check('start:203.0.113.7').ok, true, `request ${i + 1} is allowed`);
+  }
+  assert.equal(limiter.check('start:203.0.113.7').ok, false, 'the 9th shares the office IP');
+});
+
+test('account: ?paid=1 on its own no longer renders a paid account', () => {
+  const src = readA('app/account/page.jsx');
+  assert.match(src, /const purchased = ladder === 'purchased' \|\| stripePaid;/);
+  const decl = src.slice(src.indexOf('const purchased ='), src.indexOf('const v1NeedsBrief'));
+  assert.ok(!decl.includes('paidParam'), 'a query string is not evidence of payment');
+  // Everything the fake state unlocked hangs off `purchased`.
+  assert.match(src, /const showApproval = purchased &&/);
+  assert.match(src, /const showStatusLadder = purchased && orderStatus;/);
+});
+
+test('account: the post-checkout claim flow still relies on paid=1', () => {
+  const src = readA('app/account/page.jsx');
+  assert.match(
+    src,
+    /if \(!auth\?\.email && paidParam && sessionId\)/,
+    'the Stripe return still claims the session for a signed-out buyer'
+  );
+  assert.match(src, /stripe\.checkout\.sessions\.retrieve/, 'a retrieved session is the proof');
+  assert.match(src, /const stripePaid = stripeSession\?\.payment_status === 'paid';/);
+});
+
+test('compose-runs: getComposeRunById builds one whole query per case', () => {
+  const src = readA('lib/compose-runs.js');
+  const fn = src.slice(src.indexOf('export async function getComposeRunById'));
+  assert.match(
+    fn,
+    /WHERE id = \$\{runId\} AND lead_id = \$\{leadId\}/,
+    'the ownership case is a complete query'
+  );
+  assert.match(fn, /WHERE id = \$\{runId\}\s*\n\s*LIMIT 1/, 'so is the unscoped case');
+  assert.match(fn, /leadId\s*\n?\s*\?\s*await sql`/, 'the branch picks a query, not a fragment');
+  assert.match(fn, /catch \(err\)[\s\S]*return null;/, 'the miss path still returns null');
+});
+
+test('compose-runs: no query interpolates another sql`` fragment', () => {
+  // @neondatabase/serverless binds an interpolated tagged template as a
+  // parameter, so `${leadId ? sql`AND lead_id = ${leadId}` : sql``}` compiles
+  // to `WHERE id = $1 $2 LIMIT 1` and throws on every single call.
+  const nested = /\$\{[^}]*sql`/;
+  for (const path of ['lib/compose-runs.js', 'lib/leads.js', 'lib/db.js']) {
+    assert.ok(!nested.test(readA(path)), `${path} must not compose sql fragments`);
+  }
+  assert.ok(!readA('lib/compose-runs.js').includes('sql``'), 'no empty-fragment idiom');
+});
+
+test('StartFlow: a rate-limited signup never renders the raw error code', () => {
+  const src = readA('components/funnel/StartFlow.jsx');
+  // Scope to the auth/start submit only. The article-resolve call above it
+  // legitimately reads data.error, because /api/article/resolve returns written
+  // prose in that field while /api/auth/start returns a machine code.
+  const authIdx = src.indexOf("fetch('/api/auth/start'");
+  assert.ok(authIdx > 0, 'auth/start call not found');
+  const block = src.slice(authIdx, authIdx + 1400);
+  assert.match(block, /data\.message \|\| STEP_EMAIL\.failed/);
+  assert.doesNotMatch(block, /new Error\(data\.error/, 'machine codes must not reach the user');
+
+  const route = readA('app/api/auth/start/route.js');
+  assert.match(route, /rate_limited/);
+  assert.match(route, /Too many sign-in attempts/, 'the 429 must carry wording');
+  assert.match(route, /status: 429/);
+});

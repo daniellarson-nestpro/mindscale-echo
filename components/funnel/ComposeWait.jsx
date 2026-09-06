@@ -32,11 +32,18 @@ export default function ComposeWait({ onDone, onCancel }) {
         const res = await fetch('/api/brief/complete', { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         if (cancelled) return;
-        if (!res.ok || data.ok !== true) throw new Error(data.error || 'compose failed');
+        // /api/brief/complete returns a written `message` alongside its error
+        // code. Preferring the code meant customers read "insufficient_article".
+        if (!res.ok || data.ok !== true) {
+          const human = data.message || COMPOSE.errors[data.error] || '';
+          const err = new Error(human || 'compose failed');
+          err.explained = Boolean(human);
+          throw err;
+        }
         onDone?.(data.token);
       } catch (err) {
         if (!cancelled) {
-          setFailError(err?.message && err.message !== 'compose failed' ? err.message : '');
+          setFailError(err?.explained ? err.message : '');
           setFailed(true);
         }
       }

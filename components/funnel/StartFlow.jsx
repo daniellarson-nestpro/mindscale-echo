@@ -137,7 +137,10 @@ export default function StartFlow() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || STEP_EMAIL.failed);
+      // `error` is a machine code ('rate_limited', 'invalid', 'unavailable').
+      // Show the route's written `message` when it sends one, and the generic
+      // copy otherwise — never the identifier itself.
+      if (!res.ok) throw new Error(data.message || STEP_EMAIL.failed);
       router.push(`/start/verify?email=${encodeURIComponent(email.trim())}`);
     } catch (err) {
       setEmailError(err.message);

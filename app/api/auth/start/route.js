@@ -91,9 +91,22 @@ export async function POST(request) {
     return ok(email);
   }
 
+  // One office NAT can burn this window on eight colleagues; the ninth gets no
+  // code at all. Telling them to check their inbox strands them on /start/verify
+  // waiting for mail that was never sent, so answer 429 the way the other
+  // rate-limited routes do — no ok:true, no sent:true, no pending cookie.
+  // The cooldown branch below is different: there a code really was just sent.
   const ip = clientIp(request);
   if (!ipLimit.check(`start:${ip}`).ok) {
-    return ok(email);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: 'rate_limited',
+        message:
+          'Too many sign-in attempts from your network just now. Give it a few minutes and try again.',
+      },
+      { status: 429 }
+    );
   }
 
   const last = cooldown.get(email);

@@ -10,11 +10,14 @@ const MIN_PASTE_LENGTH = 100;
  * URL scraping is not an active path for V1 and is not presented to users.
  * If text is too short we show a truthful error rather than proceeding.
  */
-export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
+export default function ArticleDrop({ sources, onAdd, onRemove, error, resolving = false }) {
   const [draft, setDraft] = useState('');
   const [hint, setHint] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [reading, setReading] = useState(false);
+  // `reading` is our own PDF upload; `resolving` is StartFlow fetching a URL.
+  // Either one means the drop zone is busy and the user needs to see why.
+  const busy = reading || resolving;
   const fileRef = useRef(null);
   const areaRef = useRef(null);
 
@@ -137,10 +140,10 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            disabled={reading}
+            disabled={busy}
             aria-label="Attach a PDF"
-            aria-busy={reading}
-            title={reading ? 'Reading your PDF…' : 'Upload PDF'}
+            aria-busy={busy}
+            title={busy ? 'Working…' : 'Upload PDF'}
             className="mb-[0.15rem] flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white/55 transition-all duration-500 ease-haptic hover:text-white"
             style={{
               background: 'rgba(255,255,255,0.04)',
@@ -166,13 +169,13 @@ export default function ArticleDrop({ sources, onAdd, onRemove, error }) {
           PDF or pasted text only. Minimum {MIN_PASTE_LENGTH} characters of article content.
         </p>
 
-        {reading && (
+        {busy && (
           <p aria-live="polite" className="mt-3 text-[0.82rem] leading-relaxed text-white/55">
-            Reading your PDF…
+            {reading ? 'Reading your PDF…' : 'Reading that link…'}
           </p>
         )}
 
-        {!reading && (hint || error) && (
+        {!busy && (hint || error) && (
           <p role="alert" className="mt-3 text-[0.82rem] leading-relaxed text-amber-200/80">
             {hint || error}
           </p>
