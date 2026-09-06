@@ -46,7 +46,7 @@ function wrap(text, max) {
 }
 
 export async function GET(_request, { params }) {
-  // Saved n8n compose JSON via loadPreviewDraft; no n8n call and no PNG renderer.
+  // Saved compose JSON via loadPreviewDraft; no model call and no PNG renderer.
   const d = await loadPreviewDraft(params?.token);
 
   const W = 900;

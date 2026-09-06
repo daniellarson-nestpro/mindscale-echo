@@ -40,13 +40,6 @@ import {
   composeLockAllowsNewRun,
   hasN8nCompose,
 } from '../lib/compose.js';
-import {
-  callN8nCompose,
-  DEFAULT_N8N_WEBHOOK_URL,
-  n8nRequestHeaders,
-  n8nWebhookHost,
-  n8nWebhookUrl,
-} from '../lib/n8n.js';
 import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../lib/url.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -559,127 +552,8 @@ test('articleText falls back to scrape, then notes/quote', async () => {
   assert.equal(existing.articleText, 'Pasted article.');
 });
 
-test('n8n webhook url never uses webhook-test and defaults when unset', () => {
-  const prevUrl = process.env.N8N_WEBHOOK_URL;
-  const prevSecret = process.env.N8N_WEBHOOK_SECRET;
-  try {
-    delete process.env.N8N_WEBHOOK_URL;
-    assert.equal(n8nWebhookUrl(), DEFAULT_N8N_WEBHOOK_URL);
-    assert.equal(DEFAULT_N8N_WEBHOOK_URL.includes('webhook-test'), false);
-    assert.match(DEFAULT_N8N_WEBHOOK_URL, /\/webhook\/press-release$/);
-    assert.equal(
-      n8nWebhookUrl('https://nestpro.app.n8n.cloud/webhook-test/press-release'),
-      'https://nestpro.app.n8n.cloud/webhook/press-release'
-    );
-    assert.equal(n8nRequestHeaders('').hasOwnProperty('X-API-Key'), false);
-    assert.equal(n8nRequestHeaders('secret-key')['X-API-Key'], 'secret-key');
-  } finally {
-    if (prevUrl === undefined) delete process.env.N8N_WEBHOOK_URL;
-    else process.env.N8N_WEBHOOK_URL = prevUrl;
-    if (prevSecret === undefined) delete process.env.N8N_WEBHOOK_SECRET;
-    else process.env.N8N_WEBHOOK_SECRET = prevSecret;
-  }
-});
 
-test('n8n compose branches on ok, not HTTP status', async () => {
-  const prevSecret = process.env.N8N_WEBHOOK_SECRET;
-  process.env.N8N_WEBHOOK_SECRET = 'test-n8n-secret';
-  try {
-    let captured;
-    const okFetch = async (url, opts) => {
-      captured = { url, opts };
-      return {
-        status: 200,
-        json: async () => ({
-          ok: true,
-          headline: 'Northline opens',
-          subhead: '',
-          dateline: 'COLUMBUS, OH — September 3, 2026',
-          body: ['Para one.'],
-          quote: 'We opened.',
-          quoteAttribution: 'Dana',
-          boilerplate: 'Northline is a shop.',
-          contactLine: 'Dana, dana@northline.com',
-          error: '',
-        }),
-      };
-    };
-    const ok = await callN8nCompose(
-      { companyName: 'Northline' },
-      { fetchImpl: okFetch, url: DEFAULT_N8N_WEBHOOK_URL, secret: 'test-n8n-secret' }
-    );
-    assert.equal(ok.ok, true);
-    assert.equal(ok.draft.headline, 'Northline opens');
-    assert.equal(captured.url, DEFAULT_N8N_WEBHOOK_URL);
-    assert.equal(captured.opts.method, 'POST');
-    assert.equal(captured.opts.headers['X-API-Key'], 'test-n8n-secret');
-    assert.equal(JSON.parse(captured.opts.body).companyName, 'Northline');
 
-    const falseOk = await callN8nCompose(
-      { companyName: 'Northline' },
-      {
-        fetchImpl: async () => ({
-          status: 200,
-          json: async () => ({ ok: false, error: 'model_failed' }),
-        }),
-      }
-    );
-    assert.equal(falseOk.ok, false);
-    assert.equal(falseOk.error, 'model_failed');
-    assert.equal(statusForComposeError(falseOk.error), 200);
-
-    const timeout = await callN8nCompose(
-      { companyName: 'Northline' },
-      {
-        timeoutMs: 20,
-        fetchImpl: (_url, opts) =>
-          new Promise((_resolve, reject) => {
-            opts.signal.addEventListener('abort', () => {
-              const err = new Error('aborted');
-              err.name = 'AbortError';
-              reject(err);
-            });
-          }),
-      }
-    );
-    assert.equal(timeout.ok, false);
-    assert.equal(timeout.error, 'timeout');
-    assert.equal(statusForComposeError('timeout'), 502);
-    assert.equal(statusForComposeError('network'), 502);
-  } finally {
-    if (prevSecret === undefined) delete process.env.N8N_WEBHOOK_SECRET;
-    else process.env.N8N_WEBHOOK_SECRET = prevSecret;
-  }
-});
-
-test('callN8nCompose logs host, duration, ok, error without secrets', async () => {
-  const logs = [];
-  const orig = console.info;
-  console.info = (...args) => logs.push(args);
-  try {
-    await callN8nCompose(
-      { companyName: 'Northline' },
-      {
-        url: DEFAULT_N8N_WEBHOOK_URL,
-        fetchImpl: async () => ({
-          status: 200,
-          json: async () => ({ ok: false, error: 'articleText too brief' }),
-        }),
-      }
-    );
-  } finally {
-    console.info = orig;
-  }
-  const line = logs.find((args) => String(args[0]).includes('[n8n compose]'));
-  assert.ok(line);
-  const payload = line[1];
-  assert.equal(payload.host, 'nestpro.app.n8n.cloud');
-  assert.equal(n8nWebhookHost(), 'nestpro.app.n8n.cloud');
-  assert.equal(payload.ok, false);
-  assert.equal(payload.error, 'articleText too brief');
-  assert.equal(typeof payload.durationMs, 'number');
-  assert.equal(JSON.stringify(payload).includes('X-API-Key'), false);
-});
 
 test('only source n8n is reusable; template json is not success', async () => {
   const now = Date.parse('2026-09-03T12:00:00Z');
@@ -809,7 +683,7 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
   const waitSrc = readFileSync(join(here, '../components/funnel/ComposeWait.jsx'), 'utf8');
   const previewSrc = readFileSync(join(here, '../lib/preview-draft.js'), 'utf8');
   const plateSrc = readFileSync(join(here, '../app/api/preview/[token]/plate/route.js'), 'utf8');
-  assert.equal(completeSrc.includes('callN8nCompose'), true);
+  assert.equal(completeSrc.includes('composeRelease'), true);
   assert.equal(completeSrc.includes('canReuseN8nCompose'), true);
   assert.equal(completeSrc.includes('draftFromBrief'), false);
   assert.equal(completeSrc.includes('maxDuration'), true);
@@ -920,13 +794,12 @@ test('logo storage: launch blocker without BLOB_READ_WRITE_TOKEN', () => {
 
 test('compose_runs: exact payload saved BEFORE n8n call', () => {
   const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
-  // createComposeRun must be called before callN8nCompose
-  // Find the call sites (await createComposeRun / await callN8nCompose), not imports
+  // createComposeRun must be called before the model is invoked
   const createIdx = completeSrc.indexOf('await createComposeRun');
-  const callIdx = completeSrc.indexOf('await callN8nCompose');
+  const callIdx = completeSrc.indexOf('await composeRelease');
   assert.ok(createIdx > 0, 'await createComposeRun is used');
-  assert.ok(callIdx > 0, 'await callN8nCompose is used');
-  assert.ok(createIdx < callIdx, 'createComposeRun awaited BEFORE callN8nCompose');
+  assert.ok(callIdx > 0, 'await composeRelease is used');
+  assert.ok(createIdx < callIdx, 'createComposeRun awaited BEFORE the compose call');
 });
 
 test('n8n ok:true → saves response and exposes draft', () => {
@@ -942,7 +815,7 @@ test('n8n ok:false/timeout → never exposes fake draft', () => {
   assert.ok(!completeSrc.includes('draftFromBrief'), 'no template fallback in compose route');
   assert.ok(completeSrc.includes('failResponse'), 'returns failure on n8n error');
   assert.ok(completeSrc.includes('notifyOwnerComposeFailed'), 'notifies owner on failure');
-  assert.ok(completeSrc.includes('markComposeFinished'), 'unlocks compose on failure');
+  assert.ok(completeSrc.includes('releaseComposeLock'), 'unlocks compose on failure');
 });
 
 test('compose payload includes composeRunId and correct fields', () => {
@@ -981,65 +854,8 @@ test('n8n retry classification: timeout/network = transient', () => {
   assert.equal(statusForComposeError('insufficient_article'), 200);
 });
 
-test('n8n mock: ok:true response shape', async () => {
-  let capturedPayload = null;
-  const mockFetch = async (url, opts) => {
-    capturedPayload = JSON.parse(opts.body);
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        ok: true,
-        headline: 'Acme Opens New Factory',
-        body: ['Para one.'],
-        source: 'n8n',
-      }),
-    };
-  };
 
-  const result = await callN8nCompose(
-    { leadId: 'ld1', articleText: 'Some article', companyName: 'Acme' },
-    { fetchImpl: mockFetch, timeoutMs: 5000 }
-  );
-  assert.equal(result.ok, true);
-  assert.equal(result.draft?.headline, 'Acme Opens New Factory');
-  assert.ok(capturedPayload, 'payload was sent');
-});
 
-test('n8n mock: ok:false response never returns draft', async () => {
-  const mockFetch = async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ ok: false, error: 'model_failed' }),
-  });
-
-  const result = await callN8nCompose(
-    { leadId: 'ld1', articleText: 'article' },
-    { fetchImpl: mockFetch, timeoutMs: 5000 }
-  );
-  assert.equal(result.ok, false);
-  assert.equal(result.error, 'model_failed');
-  assert.equal(result.draft, undefined);
-});
-
-test('n8n mock: timeout returns ok:false with error=timeout', async () => {
-  const mockFetch = async (_url, opts) => {
-    await new Promise((_, reject) => {
-      opts.signal.addEventListener('abort', () => {
-        const err = new Error('aborted');
-        err.name = 'AbortError';
-        reject(err);
-      });
-    });
-  };
-
-  const result = await callN8nCompose(
-    { leadId: 'ld1', articleText: 'article' },
-    { fetchImpl: mockFetch, timeoutMs: 50 }
-  );
-  assert.equal(result.ok, false);
-  assert.equal(result.error, 'timeout');
-});
 
 test('checkout route: attaches lead_id and funnel=v2 to metadata', () => {
   const checkoutSrc = rfs(jn(HERE, '../app/api/checkout/route.js'), 'utf8');
@@ -1127,7 +943,7 @@ test('ownership: brief and approve routes require session auth', () => {
 test('no article → compose fails with honest error, brief preserved', () => {
   const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
   assert.ok(completeSrc.includes('insufficient_article'), 'returns insufficient_article error');
-  assert.ok(completeSrc.includes('markComposeFinished'), 'unlocks compose on article missing');
+  assert.ok(completeSrc.includes('releaseComposeLock'), 'unlocks compose on article missing');
   assert.ok(!completeSrc.includes('DEMO_DRAFT'), 'no DEMO_DRAFT fallback');
 });
 
@@ -1536,4 +1352,310 @@ test('logo upload: no SVG path survives in storage or the picker', () => {
   assert.ok(!pickerSrc.includes('image/svg'), 'LogoUpload no longer accepts SVG');
   const onboardingSrc = rfs(jn(HERE, '../components/OnboardingForm.jsx'), 'utf8');
   assert.ok(!onboardingSrc.includes('image/svg'), 'OnboardingForm no longer accepts SVG');
+});
+
+// ---------------------------------------------------------------------------
+// Finding 7: a failed compose retry must not destroy the existing draft
+// ---------------------------------------------------------------------------
+const T1 = '2026-09-01T10:00:00.000Z'; // a good n8n draft landed
+const T2 = '2026-09-01T10:05:00.000Z'; // customer edited the brief
+const T3 = '2026-09-01T10:06:00.000Z'; // the retry failed
+const N8N_DRAFT = JSON.stringify({ ok: true, source: 'n8n', headline: 'Harbor Freight expands' });
+
+/** Lead state after: success at T1 -> brief edit at T2 -> retry fails at T3. */
+const afterFailedRetry = {
+  id: 'lead-1',
+  compose_json: N8N_DRAFT,
+  compose_finished_at: T1,
+  updated_at: T2,
+  compose_started_at: null, // releaseComposeLock cleared it
+};
+
+test('finding 7: a failed retry leaves the customer\'s draft intact', () => {
+  assert.equal(hasComposeDraft(afterFailedRetry), true, 'the paid-for draft must survive');
+  assert.equal(hasSavedCompose(afterFailedRetry), true, '/preview must still render it');
+});
+
+test('finding 7: the lock is released so the customer can retry', () => {
+  assert.equal(isComposeInFlight(afterFailedRetry, Date.parse(T3)), false);
+  assert.equal(composeLockAllowsNewRun(afterFailedRetry, Date.parse(T3)), true);
+});
+
+test('finding 7: the surviving draft is not served as if it were current', () => {
+  // The brief moved on at T2, after the last real draft at T1 — so a fresh
+  // compose is still owed, even though the old draft is readable.
+  assert.equal(briefNewerThanCompose(afterFailedRetry), true);
+  assert.equal(canReuseN8nCompose(afterFailedRetry), false);
+});
+
+test('finding 7: stamping compose_finished_at on failure would freeze the stale draft', () => {
+  // This is the state the old markComposeFinished produced (both fields = now).
+  // It reads as "the draft is current" and permanently suppresses the retry —
+  // which is why releaseComposeLock must touch neither field.
+  const frozen = { ...afterFailedRetry, compose_finished_at: T3, updated_at: T3 };
+  assert.equal(briefNewerThanCompose(frozen), false);
+  assert.equal(canReuseN8nCompose(frozen), true, 'documents the bug we must not create');
+  assert.equal(composeLockAllowsNewRun(frozen, Date.parse(T3)), false, 'retry suppressed');
+});
+
+test('finding 7: a first-ever compose that fails can still be retried', () => {
+  const neverSucceeded = {
+    id: 'lead-2',
+    compose_json: null,
+    compose_finished_at: null,
+    updated_at: T2,
+    compose_started_at: null,
+  };
+  assert.equal(hasComposeDraft(neverSucceeded), false);
+  assert.equal(canReuseN8nCompose(neverSucceeded), false);
+  assert.equal(composeLockAllowsNewRun(neverSucceeded, Date.parse(T3)), true);
+});
+
+test('finding 7: claimComposeLock no longer wipes compose_json', () => {
+  const src = readA('lib/leads.js');
+  const body = src.slice(
+    src.indexOf('export async function claimComposeLock'),
+    src.indexOf('export async function saveComposeSuccess')
+  );
+  assert.doesNotMatch(body, /compose_json\s*=\s*NULL/, 'the draft must survive the claim');
+  assert.match(body, /compose_finished_at = NULL/, 'finished_at is still the in-flight marker');
+  // a run that produced nothing must remain claimable
+  assert.match(body, /OR compose_finished_at IS NULL/);
+});
+
+test('finding 7: releaseComposeLock only clears the lock', () => {
+  const src = readA('lib/leads.js');
+  const body = src.slice(
+    src.indexOf('export async function releaseComposeLock'),
+    src.indexOf('export async function upsertLead')
+  );
+  assert.match(body, /SET compose_started_at = NULL/);
+  assert.doesNotMatch(body, /compose_finished_at\s*=/, 'no draft was produced');
+  assert.doesNotMatch(body, /updated_at\s*=/, 'must not erase the brief-edit signal');
+  // and the misleading old name is gone everywhere
+  assert.doesNotMatch(readA('app/api/brief/complete/route.js'), /markComposeFinished/);
+});
+
+// ---------------------------------------------------------------------------
+// In-house two-stage composer (replaces the n8n webhook)
+// ---------------------------------------------------------------------------
+import { composeRelease } from '../lib/compose-engine.js';
+import {
+  DRAFT_INSTRUCTIONS,
+  DRAFT_SCHEMA,
+  FACTS_INSTRUCTIONS,
+  FACTS_SCHEMA,
+  buildDraftInput,
+  buildFactsInput,
+} from '../lib/compose-prompt.js';
+
+const CLIP =
+  'Harbor Freight Logistics will open a second depot on the western edge of Duluth, ' +
+  'Minnesota, adding about forty jobs over eighteen months, the company said Tuesday.';
+
+const PAYLOAD = {
+  companyName: 'Harbor Freight Logistics',
+  website: 'harborfreightlog.com',
+  contactName: 'Dana Reyes',
+  contactEmail: 'dana@harborfreightlog.com',
+  phone: '218-555-0134',
+  announcementType: 'New location',
+  articleText: CLIP,
+  articleSource: 'paste',
+  quote: 'Duluth has been good to us.',
+  quoteAttribution: 'Dana Reyes, President',
+  notes: 'Family owned since 1994. Please mention the hiring.',
+  leadId: 'lead-9',
+  orderId: 'order-9',
+  composeRunId: 'run-9',
+};
+
+const GOOD_FACTS = {
+  ok: true,
+  who: 'Harbor Freight Logistics',
+  what: 'opening a second depot',
+  where: 'Duluth, Minnesota',
+  when: 'Tuesday',
+  why: 'capacity growth',
+  keyFacts: ['about forty jobs', 'eighteen month timeline'],
+  discarded: '',
+  error: null,
+};
+
+const GOOD_DRAFT = {
+  ok: true,
+  headline: 'Harbor Freight Logistics opens second Duluth depot',
+  subhead: 'About forty jobs expected over eighteen months',
+  dateline: 'DULUTH, MN, September 3, 2026',
+  body: ['Para one.', 'Para two.', 'Para three.'],
+  quote: 'Duluth has been good to us.',
+  quoteAttribution: 'Dana Reyes, President',
+  boilerplate: 'Harbor Freight Logistics is a family-owned carrier.',
+  contactLine: 'Dana Reyes / dana@harborfreightlog.com',
+  error: null,
+};
+
+/** Records every call so the tests can inspect what each stage was handed. */
+function recorder(responses) {
+  const calls = [];
+  const callModel = async (args) => {
+    calls.push(args);
+    const next = responses[calls.length - 1];
+    return typeof next === 'function' ? next(args) : next;
+  };
+  return { calls, callModel };
+}
+
+test('composer: two stages produce a draft', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.draft.headline, GOOD_DRAFT.headline);
+  assert.equal(calls.length, 2, 'facts then draft');
+  assert.equal(calls[0].schema, FACTS_SCHEMA);
+  assert.equal(calls[1].schema, DRAFT_SCHEMA);
+});
+
+test('composer: the article clip is never handed to the writer', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  await composeRelease(PAYLOAD, { callModel });
+
+  // Stage 1 must see the clip; stage 2 must not. This is the anti-plagiarism
+  // and anti-hallucination invariant the whole two-stage design exists for.
+  assert.equal(calls[0].input.articleText, CLIP);
+  assert.equal(calls[1].input.articleText, '', 'blanked, not merely omitted');
+  assert.ok('articleText' in calls[1].input, 'present-but-empty defeats prompt habit');
+  assert.doesNotMatch(JSON.stringify(calls[1].input), /western edge/, 'no clip prose survives');
+});
+
+test('composer: the customer announcementType and notes reach the writer', async () => {
+  // The n8n workflow logged announcementType and passed neither field to the
+  // writer, so a REQUIRED brief field never influenced the release.
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  await composeRelease(PAYLOAD, { callModel });
+  assert.equal(calls[1].input.announcementType, 'New location');
+  assert.equal(calls[1].input.notes, 'Family owned since 1994. Please mention the hiring.');
+  assert.match(DRAFT_INSTRUCTIONS, /announcementType/);
+  assert.match(DRAFT_INSTRUCTIONS, /notes are the customer/);
+});
+
+test('composer: extracted facts are carried into stage two', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  await composeRelease(PAYLOAD, { callModel });
+  assert.deepEqual(calls[1].input.facts.keyFacts, ['about forty jobs', 'eighteen month timeline']);
+  assert.equal(calls[1].input.facts.where, 'Duluth, Minnesota');
+});
+
+test('composer: a clip with no real event fails honestly and skips the writer', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: { ...GOOD_FACTS, ok: false, error: 'no identifiable event' } },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no identifiable event');
+  assert.equal(result.stage, 'facts');
+  assert.equal(calls.length, 1, 'must not pay for a draft it cannot write');
+});
+
+test('composer: transient failures stay retryable, content failures do not', async () => {
+  const cases = [['timeout', 502], ['network', 502], ['compose_failed', 200]];
+  for (const [error, status] of cases) {
+    const { callModel } = recorder([{ ok: false, error }]);
+    const result = await composeRelease(PAYLOAD, { callModel });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, error);
+    assert.equal(result.status, status, error + ' should map to ' + status);
+    assert.equal(statusForComposeError(error), status, 'route agrees with engine');
+  }
+});
+
+test('composer: a stage-two failure is reported as such', async () => {
+  const { callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: false, error: 'refused' },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'draft');
+  assert.equal(result.error, 'refused');
+});
+
+test('composer: a writer that returns ok:false never yields a draft', async () => {
+  const { callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: { ...GOOD_DRAFT, ok: false, error: 'insufficient facts' } },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'insufficient facts');
+  assert.equal(result.draft, undefined);
+});
+
+test('composer: without a model caller it fails closed', async () => {
+  const result = await composeRelease(PAYLOAD, {});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'unavailable');
+});
+
+test('composer: internal identifiers are kept out of the model context', async () => {
+  const facts = buildFactsInput(PAYLOAD);
+  assert.equal('leadId' in facts, false);
+  assert.equal('composeRunId' in facts, false);
+  assert.equal(facts.companyName, 'Harbor Freight Logistics');
+});
+
+test('composer: both schemas are strict and fully required', () => {
+  for (const schema of [FACTS_SCHEMA, DRAFT_SCHEMA]) {
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(
+      schema.required.slice().sort(),
+      Object.keys(schema.properties).sort(),
+      'every property must be required for strict decoding'
+    );
+  }
+  // The writer output must cover everything normalizeComposeResponse reads.
+  const readKeys = ['headline', 'subhead', 'dateline', 'body', 'quote',
+    'quoteAttribution', 'boilerplate', 'contactLine'];
+  for (const key of readKeys) {
+    assert.ok(DRAFT_SCHEMA.properties[key], 'draft schema is missing ' + key);
+  }
+});
+
+test('composer: the extractor is told not to write the release', () => {
+  assert.match(FACTS_INSTRUCTIONS, /Do not write a press release/);
+  assert.match(DRAFT_INSTRUCTIONS, /Never invent dates, addresses, awards, stats, motives, or quotes/);
+  assert.match(DRAFT_INSTRUCTIONS, /articleText is intentionally absent/);
+});
+
+test('composer: buildDraftInput is pure and tolerates missing fields', () => {
+  const empty = buildDraftInput({}, {});
+  assert.equal(empty.articleText, '');
+  assert.deepEqual(empty.facts.keyFacts, []);
+  assert.equal(empty.companyName, '');
+  const before = JSON.stringify(PAYLOAD);
+  buildDraftInput(PAYLOAD, GOOD_FACTS);
+  assert.equal(JSON.stringify(PAYLOAD), before, 'must not mutate the payload');
+});
+
+test('composer: the SDK is imported in exactly one module', () => {
+  assert.match(readA('lib/anthropic.js'), /@anthropic-ai\/sdk/);
+  assert.doesNotMatch(readA('lib/compose-engine.js'), /@anthropic-ai\/sdk/, 'engine stays testable');
+  assert.doesNotMatch(readA('lib/compose-prompt.js'), /@anthropic-ai\/sdk/);
+  const client = readA('lib/anthropic.js');
+  assert.match(client, /claude-opus-5/);
+  assert.match(client, /output_config/);
+  assert.match(client, /json_schema/);
+  assert.match(client, /refusal/, 'a policy decline must not read as a draft');
 });
