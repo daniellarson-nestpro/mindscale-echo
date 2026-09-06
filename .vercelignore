@@ -1,0 +1,9 @@
+# Explicit upload exclusions. Do not rely on .gitignore fallback here —
+# this file also keeps a local credentials scratch file out of the bundle.
+node_modules
+.next
+.git
+.claude
+fixtures
+*neon and open router*
+.env.local
