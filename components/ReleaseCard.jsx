@@ -11,14 +11,48 @@ import {
 import { Check } from './Icons';
 import OnboardingForm from './OnboardingForm';
 
-export default function ReleaseCard({ order, email }) {
+export default function ReleaseCard({ order, email, quiet = false }) {
   const plan = PLANS[order.plan];
   const paid = isPaid(order);
   const brief = hasBrief(order);
   const current = currentStepId(order);
 
+  if (quiet) {
+    return (
+      <article className="bezel" data-order-id={order.stripe_session_id || order.id}>
+        <div className="bezel-core overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-4 sm:px-7">
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-eyebrow text-white/35">
+                Your release
+              </p>
+              <h2 className="mt-1 font-display text-[1.45rem] text-white">
+                {plan?.name || order.plan} package
+              </h2>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {paid && (
+                <span className="eyebrow">
+                  <Check width={11} height={11} /> Paid
+                </span>
+              )}
+              <span className="logo-pill">
+                {formatAmount(order.amount_cents, order.currency)}
+              </span>
+            </div>
+          </div>
+          {brief ? (
+            <div className="p-5 sm:p-7">
+              <BriefSummary order={order} />
+            </div>
+          ) : null}
+        </div>
+      </article>
+    );
+  }
+
   return (
-    <article className="bezel">
+    <article className="bezel" data-order-id={order.stripe_session_id || order.id}>
       <div className="bezel-core overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-4 sm:px-7">
           <div>

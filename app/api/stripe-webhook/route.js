@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getStripe } from '../../../lib/stripe';
 import { notifyPaidOrder, upsertOrderFromCheckoutSession } from '../../../lib/orders';
+import { notifyOwnerPaymentSuccess, recordStatusTransition } from '../../../lib/notify';
+import { applyExistingApprovalToPaidOrder, updateLeadOrderStatus } from '../../../lib/leads';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,6 +43,8 @@ export async function POST(request) {
     const session = sessionId
       ? await stripe.checkout.sessions.retrieve(sessionId)
       : event.data?.object;
+    // Lead brief attaches here via syncLeadOntoPaidOrder inside the upsert.
+    // Do not add a second webhook for V2.
     order = await upsertOrderFromCheckoutSession(session);
   } catch (err) {
     console.error('[stripe-webhook] persist failed:', err?.message);
@@ -49,5 +53,41 @@ export async function POST(request) {
 
   // Email failures are logged inside notifyPaidOrder and must not 500 the webhook.
   await notifyPaidOrder(order);
+
+  // Owner notification (Telegram + email)
+  if (order) {
+    notifyOwnerPaymentSuccess({
+      leadId: order.lead_id || '',
+      email: order.email,
+      plan: order.plan,
+      amountCents: order.amount_cents,
+    }).catch(() => {});
+
+    // Mark lead paid, or approved if they already signed off on the draft.
+    if (order.lead_id) {
+      (async () => {
+        const applied = await applyExistingApprovalToPaidOrder(order);
+        if (applied) {
+          await recordStatusTransition({
+            leadId: order.lead_id,
+            orderId: order.id,
+            fromStatus: 'paid',
+            toStatus: 'approved',
+            actor: 'stripe_webhook',
+          });
+          return;
+        }
+        await updateLeadOrderStatus(order.lead_id, 'paid');
+        await recordStatusTransition({
+          leadId: order.lead_id,
+          orderId: order.id,
+          fromStatus: null,
+          toStatus: 'paid',
+          actor: 'stripe_webhook',
+        });
+      })().catch(() => {});
+    }
+  }
+
   return NextResponse.json({ received: true });
 }

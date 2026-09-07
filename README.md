@@ -91,6 +91,51 @@ Auth never lists another customer’s orders — queries are scoped to the signe
 
 ---
 
+## V2 auth / leads APIs (backend slice)
+
+Inverted-funnel screens (`/start`, `/start/verify`, `/brief`, `/preview`, `/checkout`) call these APIs. Stub login (`000000` / `111111` / any six digits) is gone. No new env vars — reuse `AUTH_SECRET`, `RESEND_API_KEY`, `EMAIL_FROM`, and Postgres.
+
+**Preview deploys** need `AUTH_SECRET`, `RESEND_API_KEY`, and `EMAIL_FROM` set (they are Production-only today). Without them, `POST /api/auth/start` returns 503 and the code email cannot send.
+
+Unpurchased briefs live on `leads` (email-unique). `orders.stripe_session_id` stays NOT NULL UNIQUE and paid-only. After a paid checkout, a complete lead brief is copied onto that order when the order has none yet.
+
+`POST /api/brief/complete` is the only n8n call. The browser POSTs that route (ComposeWait); it never talks to n8n. n8n does not email the customer. HTTP 200 from n8n can still mean `ok: false` — Echo branches on `ok`. Timeout / network is 502 `{ ok: false, error }`; the brief stays in progress. `{ ok: true }` is only returned after n8n `ok: true` (saved as `compose_json` with `source: "n8n"`). Template / `draftFromBrief` copy is never a successful compose. A prior n8n draft is reused only if `source` is `n8n` and the brief has not been edited since.
+
+| Endpoint | Purpose |
+| -------- | ------- |
+| `POST /api/auth/start` | Email-only gate. Upserts a lead, issues **one** magic_links row (long token + hashed 6-digit code, 20 min). Always `{ ok: true, email, sent: true }` — never the code, never whether the email existed. Optional `prefill` and `context` (`articleUrl`, `articleText`, `announcementType`, `companyName`, `quote`) are stored on the lead before verify. `resend: false` attaches wait-filler fields without burning a live code. |
+| `POST /api/auth/verify` | Body `{ email, code, prefill? }`. Hyphens/spaces stripped (`483-201` → `483201`). Constant-time hash compare. Success sets `echo_session` and returns `{ ok, verified, furthestStep, redirectTo, next }`. Wrong code `{ error: "invalid" }`; expired `{ error: "expired", expired: true }`. 8 failed tries then resend. |
+| `GET /api/auth/callback?token=` | Redeeming the long token burns the same attempt. Redirects to the furthest incomplete step (`/brief` for new leads, `/account` if they already paid). Safe `next` is honored. |
+| `GET /api/session/status` | 3s cross-device poll. `{ verified: false }` until this browser has a session **or** the pending start cookie’s attempt was redeemed on another device (then this browser gets the session too). No email enumeration. |
+| `GET /api/auth/me` | Still `{ email }`. Also `furthestStep`, `redirectTo`, `ladder` when cheap. |
+| `GET /api/account` | JSON for the workspace ladder: lead, orders, `ladder` (`empty` / `in_progress` / `draft_ready_unpurchased` / `purchased`). |
+| `POST /api/articles/resolve` | Ungated article scrape. Rate-limited (IP + optional email). SSRF-blocked. Weak parse still `{ ok: true, title: null, warning: "unparsed" }`. |
+| `POST /api/article/resolve` | Hyperagent alias. Same scrape. Response `{ url, headline, outlet, date, partial }`. Garbage URL: 400 `{ error }`. Weak fetch/parse: `partial: true`. |
+| `PATCH /api/brief` + `GET /api/brief` | Hyperagent alias of lead autosave / resume. PATCH → `{ saved: true }`. GET with a session → `{ brief }` or `{ brief: null }`. No session → 401 `{ error: "auth" }` (V2 `/start`, not V1 `/login`). |
+| `POST /api/brief/complete` | Session required. Loads the lead, scrapes `articleUrl` if `articleText` is empty, POSTs n8n `/webhook/press-release` (never `/webhook-test/`). `{ ok: true, token }` only after n8n `ok: true` (saved with `source: "n8n"`). On `ok: false` / timeout, `{ ok: false, error }` and furthest step stays in progress. Reuses a prior run only if `compose_json.source` is `n8n` and the brief has not been edited since. |
+| `POST /api/prefill` + `GET /api/prefill` | Signed httpOnly cookie (10 min, `AUTH_SECRET`). Query-style fields: `email`, `companyName`, `articleUrl`, `quote`, `contactName`, `phone`. Does **not** create an account. Frontend should `history.replaceState` the URL clean. Verify merges the cookie into the lead and clears it. |
+| `PATCH /api/onboarding` | Authenticated JSON autosave onto the lead. Same camelCase names as today’s POST. `articleFile` is ignored (storage is a later PR). `POST /api/onboarding` still attaches a brief to a **paid** order. |
+
+`POST /api/auth/login` is unchanged (30-minute magic-link email, same copy). Existing unused 30-minute links expire on their own.
+
+Verification email (V2 only):
+
+```
+Subject: Your Mindscale Echo code: 483201
+
+Here's your code: 483201. Good for 20 minutes. Or just tap the button below.
+```
+
+Plus the existing callback button/link. Purchase-confirmation email is untouched.
+
+`furthestStep` is one of `brief` | `preview` | `checkout` | `account`. `/account` order cards expose `data-order-id` (Stripe session id, else order id).
+
+```bash
+npm test    # node:test — code redeem, leak shape, scrape SSRF, rate limit
+```
+
+---
+
 ## Purchase confirmation email
 
 After a Checkout Session is **paid**, Mindscale Echo sends one confirmation via Resend
@@ -167,14 +212,16 @@ No extra env vars. Reuses `RESEND_API_KEY` and `EMAIL_FROM`.
 | `RESEND_API_KEY`         | Yes (prod email) | Resend API key for purchase confirmation and magic-link email.      |
 | `EMAIL_FROM`             | Yes (prod email) | Verified from-address, e.g. `Mindscale Echo <hello@domain.com>`.    |
 | `ONBOARDING_WEBHOOK_URL` | Optional | Extra JSON POST of every saved brief (Zapier / Make / etc.).           |
+| `ANTHROPIC_API_KEY`      | Required | Press-release composer. Two Claude calls: facts extraction, then composition. Without it, compose returns a launch-blocker 503. |
 
 No secret is ever hardcoded, and `.env` / `.env.local` are gitignored.
 
 ### Create the dashboard resources (Daniel)
 
 These cannot be invented in git. After they exist, paste the names above into Vercel →
-Project **mindscale-echo** → Settings → Environment Variables (Production + Preview),
-then redeploy.
+Project **mindscale-echo** → Settings → Environment Variables. Copy
+`AUTH_SECRET`, `RESEND_API_KEY`, and `EMAIL_FROM` onto Preview as well as
+Production — V2 `/start` will 503 on Preview until those exist — then redeploy.
 
 **1. Postgres (Neon / Vercel Storage)**
 
@@ -231,7 +278,7 @@ still a hook (`await logo.arrayBuffer()` → S3, R2, Supabase Storage, or Upload
 
 Collected fields: company name, website, contact name, contact email, article URL,
 announcement type, preferred quote + attribution, free-form notes, and an optional logo
-(≤ 5 MB, PNG/JPEG/SVG/WebP).
+(≤ 5 MB, PNG/JPEG/WebP — SVG is rejected as a stored-XSS vector).
 
 ---
 
@@ -259,11 +306,21 @@ app/
   api/checkout/route.js      Creates the Stripe Checkout Session + Customer
   api/onboarding/route.js    Saves the brief onto the order
   api/stripe-webhook/route.js  checkout.session.completed → persist order + confirmation email
-  api/auth/login/route.js    Issue magic link
-  api/auth/callback/route.js Consume magic link, set cookie
+  api/auth/login/route.js    Issue magic link (V1, 30 min)
+  api/auth/start/route.js    V2 email gate + 20 min code+link
+  api/auth/verify/route.js   Redeem 6-digit code
+  api/auth/callback/route.js Consume magic link, set cookie, resume furthest step
   api/auth/claim/route.js    Sign in from a verified Checkout session_id
   api/auth/logout/route.js   Clear session cookie
-  api/auth/me/route.js       { email } for the header
+  api/auth/me/route.js       { email, furthestStep } for the header
+  api/session/status/route.js  Cross-device poll
+  api/prefill/route.js       Signed outbound prefill cookie
+  api/articles/resolve/route.js  Ungated article scrape (v1 field names)
+  api/article/resolve/route.js   Same scrape, Hyperagent field names
+  api/brief/route.js         Lead autosave / resume (Hyperagent alias)
+  api/brief/complete/route.js  Server-side n8n compose; returns `{ ok, token }`
+  api/account/route.js       Workspace JSON (lead + orders + ladder)
+  api/onboarding/route.js    POST paid brief / PATCH lead autosave
 components/
   Nav.jsx                    Floating glass pill nav + Log in / Workspace
   CheckoutButton.jsx         Client-side checkout trigger with error surface
@@ -280,11 +337,15 @@ lib/
   stripe.js                  Lazy Stripe client + origin resolution
   db.js                      Neon client + schema ensure
   orders.js                  Idempotent order upsert + brief attach + confirmation send
-  auth.js                    Signed cookie session + magic-link tokens
-  email.js                   Resend: purchase confirmation + magic-link sender
+  auth.js                    Signed cookie session + magic-link tokens + hashed codes
+  email.js                   Resend: purchase confirmation + magic-link + V2 code mail
+  leads.js                   Unpurchased briefs + furthest step
+  prefill.js                 Signed 10-minute outbound cookie
+  scrape.js / ssrf.js        Article fetch with timeouts, size cap, SSRF checks
+  n8n.js / compose.js        Server-only webhook client + compose JSON mapping
   release-status.js          Paid / Brief received vs placeholder steps
 sql/
-  schema.sql                 orders + magic_links
+  schema.sql                 orders + magic_links + leads
 ```
 
 ## Editing copy
