@@ -155,26 +155,69 @@ test('furthestStep and ladder from lead/order state', () => {
   assert.equal(resolveFurthestStep(null, []), 'brief');
   assert.equal(pathForStep('brief'), '/brief');
   assert.equal(pathForStep('account'), '/account');
-  assert.equal(inferStepFromLead({ company_name: 'Acme', announcement_type: 'launch' }), 'preview');
+  assert.equal(resolveFurthestStep({ furthest_step: 'brief' }, [{ payment_status: 'paid' }]), 'account');
+  assert.equal(ladderState(null, []), 'empty');
+  assert.equal(ladderState({ company_name: 'Acme' }, []), 'in_progress');
+  assert.equal(ladderState({}, [{ payment_status: 'paid' }]), 'purchased');
+});
+
+const N8N_DRAFT_JSON = JSON.stringify({ ok: true, source: 'n8n', headline: 'Acme opens' });
+
+test('progress: a filled-in brief is not progress past the brief', () => {
+  // /start collects company name, announcement type and article text before the
+  // email gate. Inferring 'checkout' from that trio sent every new customer from
+  // email verification straight to a payment page, skipping the brief and the
+  // compose — asking them to pay for a release nobody had written yet.
+  assert.equal(inferStepFromLead({ company_name: 'Acme', announcement_type: 'launch' }), 'brief');
+  assert.equal(
+    inferStepFromLead({
+      company_name: 'Acme',
+      announcement_type: 'launch',
+      article_text: 'Acme opened a second depot in Duluth this week.',
+    }),
+    'brief'
+  );
   assert.equal(
     inferStepFromLead({
       company_name: 'Acme',
       announcement_type: 'launch',
       article_url: 'https://news.example/story',
     }),
-    'checkout'
+    'brief'
   );
-  assert.equal(resolveFurthestStep({ furthest_step: 'brief' }, [{ payment_status: 'paid' }]), 'account');
-  assert.equal(ladderState(null, []), 'empty');
-  assert.equal(ladderState({ company_name: 'Acme' }, []), 'in_progress');
-  assert.equal(
-    ladderState(
-      { company_name: 'Acme', announcement_type: 'launch', article_url: 'https://news.example/x' },
-      []
-    ),
-    'draft_ready_unpurchased'
-  );
-  assert.equal(ladderState({}, [{ payment_status: 'paid' }]), 'purchased');
+});
+
+test('progress: only a real draft advances the step', () => {
+  assert.equal(inferStepFromLead({ compose_json: N8N_DRAFT_JSON }), 'preview');
+  assert.equal(pathForStep(inferStepFromLead({ compose_json: N8N_DRAFT_JSON })), '/preview');
+  // a template/local payload is not a draft
+  assert.equal(inferStepFromLead({ compose_json: '{"ok":true,"source":"template"}' }), 'brief');
+});
+
+test('progress: the ladder says draft-ready only when a draft exists', () => {
+  const filledBrief = {
+    company_name: 'Acme',
+    announcement_type: 'launch',
+    article_url: 'https://news.example/x',
+  };
+  assert.equal(ladderState(filledBrief, []), 'in_progress', 'no draft yet');
+  assert.equal(ladderState({ ...filledBrief, compose_json: N8N_DRAFT_JSON }, []), 'draft_ready_unpurchased');
+  // verified but empty still counts as started
+  assert.equal(ladderState({ verified_at: '2026-09-06T00:00:00Z' }, []), 'in_progress');
+});
+
+test('progress: verifying email lands a new customer on the brief, not checkout', () => {
+  // The redirect after the magic link is pathForStep(resolveFurthestStep(...)).
+  const justStarted = {
+    company_name: 'Acme',
+    announcement_type: 'launch',
+    article_text: 'Acme opened a second depot in Duluth this week.',
+    furthest_step: 'brief',
+    verified_at: '2026-09-06T00:00:00Z',
+  };
+  assert.equal(pathForStep(resolveFurthestStep(justStarted, [])), '/brief');
+  const callback = readA('app/api/auth/callback/route.js');
+  assert.match(callback, /pathForStep\(progress\.furthestStep\)/, 'callback routes on the step');
 });
 
 test('prefill drops garbage fields silently', () => {
