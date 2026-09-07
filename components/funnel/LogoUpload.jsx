@@ -63,24 +63,45 @@ export default function LogoUpload({ onChange, error: serverError = null }) {
 
     setWorking(true);
     const processed = await downscale(file);
-    setWorking(false);
 
     if (processed.size > MAX_BYTES) {
+      setWorking(false);
       setError(FIELDS.logo.tooBig);
       return;
     }
 
+    const previewUrl = URL.createObjectURL(processed);
     setPicked({
       name: processed.name,
       size: processed.size,
       shrunk: processed.size < file.size,
-      url: URL.createObjectURL(processed),
+      url: previewUrl,
+      uploading: true,
     });
-    const failure = await onChange?.(processed);
-    if (typeof failure === 'string' && failure) {
-      // Upload rejected server-side — retract the success chip.
-      setError(failure);
+
+    try {
+      const form = new FormData();
+      form.append('logo', processed);
+      const res = await fetch('/api/logo', { method: 'POST', body: form });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        setPicked(null);
+        setError(data.error || 'Logo upload failed. Please try again.');
+        return;
+      }
+      setPicked({
+        name: data.name || processed.name,
+        size: data.size || processed.size,
+        shrunk: processed.size < file.size,
+        url: data.logoUrl || previewUrl,
+        uploading: false,
+      });
+      onChange?.(processed);
+    } catch {
       setPicked(null);
+      setError('Logo upload failed. Please try again.');
+    } finally {
+      setWorking(false);
     }
   }
 
@@ -113,8 +134,9 @@ export default function LogoUpload({ onChange, error: serverError = null }) {
               <span className="truncate">{picked.name}</span>
             </span>
             <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-eyebrow text-white/32">
-              {kb(picked.size)}
-              {picked.shrunk ? ' · resized for upload' : ''}
+              {picked.uploading
+                ? 'Uploading…'
+                : `${kb(picked.size)}${picked.shrunk ? ' · resized for upload' : ''}`}
             </span>
           </span>
           <button
@@ -148,7 +170,7 @@ export default function LogoUpload({ onChange, error: serverError = null }) {
           }}
         >
           <span className="text-[0.9rem] text-white/55">
-            {working ? 'Getting it ready…' : FIELDS.logo.drop}
+            {working ? 'Uploading…' : FIELDS.logo.drop}
           </span>
           <span className="btn-nib" style={{ background: 'rgba(255,255,255,0.08)' }}>
             <svg

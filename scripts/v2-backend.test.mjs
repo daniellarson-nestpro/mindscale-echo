@@ -20,7 +20,7 @@ import { isPrivateIPv4, isPrivateIPv6, isPrivateIp, parsePublicHttpUrl } from '.
 import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
-import { briefSavedBody, hasResumableBrief, initialFromBrief, leadToBriefJson, mergeBriefFormState, sourcesFromBrief } from '../lib/brief-shape.js';
+import { briefSavedBody, hasResumableBrief, initialFromBrief, leadToBriefJson, mergeBriefFormState, sourcesFromBrief, articlePatchFromSources, hasUsableArticleSource, MIN_ARTICLE_CHARS } from '../lib/brief-shape.js';
 import { checkoutSummaryFromBrief, draftFromBrief, hasRealBrief } from '../lib/draft.js';
 import {
   articleSourceFromLead,
@@ -316,6 +316,27 @@ test('brief form resume maps saved fields including article sources', () => {
   assert.equal(merged.values.companyName, 'Northline');
   assert.equal(merged.sources.length, 2);
   assert.deepEqual(initialFromBrief(null), {});
+});
+
+test('articlePatchFromSources persists paste and clears when sources are removed', () => {
+  const pasted = 'The shop opened downtown. '.repeat(8).trim();
+  assert.ok(pasted.length >= MIN_ARTICLE_CHARS);
+
+  const fromPaste = articlePatchFromSources([{ type: 'text', value: pasted }]);
+  assert.equal(fromPaste.articleText, pasted);
+  assert.equal(fromPaste.articleSource, 'paste');
+  assert.equal(hasUsableArticleSource([{ type: 'text', value: pasted }]), true);
+
+  const fromPdfOnly = articlePatchFromSources([{ type: 'file', value: 'story.pdf' }]);
+  assert.equal(fromPdfOnly.articleText, '');
+  assert.equal(fromPdfOnly.articleSource, 'pdf');
+  assert.equal(hasUsableArticleSource([{ type: 'file', value: 'story.pdf' }]), false);
+
+  const cleared = articlePatchFromSources([]);
+  assert.equal(cleared.articleText, '');
+  assert.equal(cleared.articleSource, '');
+  assert.equal(hasUsableArticleSource([]), false);
+  assert.equal(hasUsableArticleSource([{ type: 'text', value: 'too short' }]), false);
 });
 
 test('Change something stays on V2 /brief#news; GET 401 goes to /start', () => {
@@ -694,7 +715,29 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
   assert.equal(waitSrc.includes('/api/brief/complete'), true);
   assert.equal(waitSrc.includes('data.ok !== true'), true);
   assert.equal(previewSrc.includes("saved?.source === 'n8n'"), true);
+  assert.equal(previewSrc.includes('getLeadById'), true);
   assert.equal(plateSrc.includes('loadPreviewDraft'), true);
+});
+
+test('loadPreviewDraft resolves lead by token before session email', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const previewSrc = readFileSync(join(here, '../lib/preview-draft.js'), 'utf8');
+  const fnStart = previewSrc.indexOf('export async function loadPreviewDraft');
+  assert.ok(fnStart !== -1, 'exports loadPreviewDraft');
+  const fnBody = previewSrc.slice(fnStart);
+  const tokenIdx = fnBody.indexOf('safePreviewToken(token)');
+  const byIdIdx = fnBody.indexOf('getLeadById(previewToken)');
+  const byEmailIdx = fnBody.indexOf('getLeadByEmail(session.email)');
+  assert.ok(tokenIdx !== -1, 'sanitizes the preview token');
+  assert.ok(byIdIdx !== -1, 'loads lead by token id');
+  assert.ok(byEmailIdx !== -1, 'falls back to session email');
+  assert.ok(tokenIdx < byIdIdx, 'sanitizes token before id lookup');
+  assert.ok(byIdIdx < byEmailIdx, 'token lookup precedes session fallback');
+  assert.ok(fnBody.includes("previewToken !== 'demo'"), 'skips id lookup for the demo token');
+  assert.ok(
+    !fnBody.slice(0, byIdIdx).includes('session?.email'),
+    'token-based load does not require a session'
+  );
 });
 
 // ─── V1 end-to-end acceptance tests ────────────────────────────────────────
@@ -702,8 +745,21 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
 import { readFileSync as rfs } from 'node:fs';
 import { fileURLToPath as fUrl } from 'node:url';
 import { dirname as dn, join as jn } from 'node:path';
-import { validateLogoBuffer } from '../lib/logo-storage.js';
-import { APPROVAL_CHECKBOX_COPY } from '../lib/approval.js';
+import {
+  validateLogoBuffer,
+  inferImageMime,
+  blobPutOptions,
+  shouldRetryAsPrivate,
+  putLogoBlob,
+  storeLogo,
+} from '../lib/logo-storage.js';
+import {
+  APPROVAL_CHECKBOX_COPY,
+  APPROVAL_REQUIRED_MESSAGE,
+  displayOrderStatus,
+  previewApprovePath,
+  shouldGateCheckoutOnApproval,
+} from '../lib/approval.js';
 const HERE = dn(fUrl(import.meta.url));
 
 test('six-digit code: no dash, exactly 6 digits', () => {
@@ -790,6 +846,78 @@ test('logo storage: launch blocker without BLOB_READ_WRITE_TOKEN', () => {
   assert.ok(logoStorageSrc.includes('BLOB_READ_WRITE_TOKEN'), 'checks for token');
   assert.ok(logoStorageSrc.includes('launchBlocker'), 'returns launchBlocker flag');
   assert.ok(logoStorageSrc.includes('LAUNCH BLOCKER'), 'logs LAUNCH BLOCKER');
+  // Static import so Next.js bundles @vercel/blob into the serverless function.
+  assert.ok(
+    /import \{ put \} from '@vercel\/blob'/.test(logoStorageSrc),
+    'statically imports @vercel/blob'
+  );
+  assert.ok(!logoStorageSrc.includes("await import('@vercel/blob')"), 'does not dynamically import blob SDK');
+});
+
+test('blob put options pass RW token and default to public access', () => {
+  const opts = blobPutOptions({ mimeType: 'image/png', token: 'vercel_blob_rw_test' });
+  assert.equal(opts.access, 'public');
+  assert.equal(opts.contentType, 'image/png');
+  assert.equal(opts.token, 'vercel_blob_rw_test');
+  assert.equal(opts.addRandomSuffix, true);
+});
+
+test('shouldRetryAsPrivate classifies store access mismatches', () => {
+  assert.equal(shouldRetryAsPrivate(new Error('Cannot use public access on a private store')), true);
+  assert.equal(shouldRetryAsPrivate(new Error('Access denied, please provide a valid token')), false);
+  assert.equal(shouldRetryAsPrivate(new Error('timeout')), false);
+});
+
+test('putLogoBlob retries as private when public access is rejected', async () => {
+  const calls = [];
+  const putImpl = async (_path, _body, options) => {
+    calls.push(options.access);
+    if (options.access === 'public') {
+      throw new Error('Cannot use public access on a private store');
+    }
+    return { url: 'https://blob.example/logo.png', pathname: 'logos/x/logo.png' };
+  };
+  const result = await putLogoBlob('logos/x/logo.png', new Uint8Array([1, 2, 3]), {
+    mimeType: 'image/png',
+    token: 'vercel_blob_rw_test',
+    putImpl,
+  });
+  assert.deepEqual(calls, ['public', 'private']);
+  assert.equal(result.url, 'https://blob.example/logo.png');
+});
+
+test('storeLogo succeeds with mocked put and PNG magic bytes', async () => {
+  const prev = process.env.BLOB_READ_WRITE_TOKEN;
+  process.env.BLOB_READ_WRITE_TOKEN = 'vercel_blob_rw_test';
+  try {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+    const stored = await storeLogo({
+      buffer: png,
+      mimeType: 'image/png',
+      originalName: 'mark.png',
+      leadId: 'lead-1',
+      putImpl: async () => ({ url: 'https://blob.example/mark.png', pathname: 'logos/lead-1/mark.png' }),
+    });
+    assert.equal(stored.ok, true);
+    assert.equal(stored.url, 'https://blob.example/mark.png');
+    assert.equal(stored.type, 'image/png');
+  } finally {
+    if (prev === undefined) delete process.env.BLOB_READ_WRITE_TOKEN;
+    else process.env.BLOB_READ_WRITE_TOKEN = prev;
+  }
+});
+
+test('inferImageMime reads PNG signature when Content-Type is missing', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+  assert.equal(inferImageMime(png), 'image/png');
+  assert.equal(inferImageMime(Buffer.from('hello')), '');
+});
+
+test('logo route infers MIME and wraps unhandled errors as JSON 502', () => {
+  const routeSrc = rfs(jn(HERE, '../app/api/logo/route.js'), 'utf8');
+  assert.ok(routeSrc.includes('inferImageMime'), 'infers MIME when file.type is empty');
+  assert.ok(routeSrc.includes('unhandled:'), 'catches unhandled throws');
+  assert.ok(routeSrc.includes("formData.get('logo')"), 'reads logo FormData field');
 });
 
 test('compose_runs: exact payload saved BEFORE n8n call', () => {
@@ -861,8 +989,10 @@ test('checkout route: attaches lead_id and funnel=v2 to metadata', () => {
   const checkoutSrc = rfs(jn(HERE, '../app/api/checkout/route.js'), 'utf8');
   assert.ok(checkoutSrc.includes('lead_id'), 'lead_id in metadata');
   assert.ok(checkoutSrc.includes("funnel: 'v2'"), 'V2 funnel marker');
-  assert.ok(checkoutSrc.includes('getLeadByEmail'), 'looks up lead for metadata');
+  assert.ok(checkoutSrc.includes('getLeadForCheckout'), 'looks up lead for metadata');
   assert.ok(checkoutSrc.includes("funnel: 'v1'"), 'v1 fallback marker');
+  assert.ok(checkoutSrc.includes('approval_required'), 'refuses checkout without approval');
+  assert.ok(checkoutSrc.includes('hasN8nCompose'), 'gates only when a real n8n draft exists');
 });
 
 test('stripe webhook: idempotent upsert on stripe_session_id', () => {
@@ -881,12 +1011,74 @@ test('approval checkbox: copy is canonical and stored', () => {
   assert.ok(!APPROVAL_CHECKBOX_COPY.includes('irreversible'), 'does not say irreversible');
 });
 
+test('approval checkbox refreshes account UI after success', () => {
+  const checkboxSrc = rfs(jn(HERE, '../components/funnel/ApprovalCheckbox.jsx'), 'utf8');
+  const accountSrc = rfs(jn(HERE, '../app/account/page.jsx'), 'utf8');
+  const wrapperSrc = rfs(jn(HERE, '../components/funnel/PaidReleaseStatus.jsx'), 'utf8');
+  assert.ok(checkboxSrc.includes('router.refresh()'), 'ApprovalCheckbox calls router.refresh on success');
+  assert.ok(checkboxSrc.includes('setDone(true)'), 'ApprovalCheckbox shows local already-approved state');
+  assert.ok(checkboxSrc.includes('CHECKBOX_COPY'), 'uses canonical audit copy');
+  assert.ok(checkboxSrc.includes('Approve this release'), 'button does not claim vendor submission');
+  assert.ok(!checkboxSrc.includes('Approve and submit for fulfillment'), 'old post-pay CTA is gone');
+  assert.ok(wrapperSrc.includes('onApproved={handleApproved}'), 'PaidReleaseStatus passes onApproved');
+  assert.ok(wrapperSrc.includes("setStatus((prev) => (prev === 'pr_sent' ? prev : 'approved'))"), 'ladder moves to approved');
+  assert.ok(wrapperSrc.includes("status === 'paid'"), 'account checkbox is paid-not-approved fallback only');
+  assert.ok(accountSrc.includes('PaidReleaseStatus'), 'account page uses client wrapper');
+  assert.ok(accountSrc.includes('alreadyApproved'), 'account knows prior approval');
+});
+
+test('preview is the pre-pay approval surface', () => {
+  const previewSrc = rfs(jn(HERE, '../components/funnel/PreviewScreen.jsx'), 'utf8');
+  const previewPage = rfs(jn(HERE, '../app/preview/[token]/page.jsx'), 'utf8');
+  const checkoutPage = rfs(jn(HERE, '../app/checkout/page.jsx'), 'utf8');
+  const webhookSrc = rfs(jn(HERE, '../app/api/stripe-webhook/route.js'), 'utf8');
+  const leadsSrc = rfs(jn(HERE, '../lib/leads.js'), 'utf8');
+  const accountSrc = rfs(jn(HERE, '../app/account/page.jsx'), 'utf8');
+  assert.ok(previewSrc.includes('ApprovalCheckbox'), 'preview shows the approval checkbox');
+  assert.ok(previewSrc.includes('disabled={!canCheckout}'), 'Send it out waits for approval');
+  assert.ok(previewSrc.includes('/start'), 'unsigned-in owners are sent to start, not login');
+  assert.ok(!previewSrc.includes('/login'), 'preview does not use the post-pay login page');
+  assert.ok(previewPage.includes('requiresApproval'), 'preview page passes real-draft flag');
+  assert.ok(previewPage.includes('getApprovalForLead'), 'preview page loads existing approval');
+  assert.ok(checkoutPage.includes('redirect(previewApprovePath'), 'checkout page bounces unapproved drafts');
+  assert.ok(webhookSrc.includes('applyExistingApprovalToPaidOrder'), 'webhook reuses pre-pay approval');
+  assert.ok(leadsSrc.includes('orderId || null'), 'approvals.order_id can be null');
+  assert.ok(leadsSrc.includes('attachOrderIdToApproval'), 'paid order can attach later');
+  assert.ok(accountSrc.includes('alreadyApproved ?'), 'unapproved account draft does not push checkout');
+});
+
+test('displayOrderStatus: approval row wins over stale paid status', () => {
+  assert.equal(displayOrderStatus({ orderStatus: 'paid', alreadyApproved: true }), 'approved');
+  assert.equal(displayOrderStatus({ orderStatus: 'approved', alreadyApproved: true }), 'approved');
+  assert.equal(displayOrderStatus({ orderStatus: 'pr_sent', alreadyApproved: true }), 'pr_sent');
+  assert.equal(displayOrderStatus({ orderStatus: 'paid', alreadyApproved: false }), 'paid');
+  assert.equal(displayOrderStatus({ orderStatus: 'refunded', alreadyApproved: true }), 'refunded');
+});
+
+test('shouldGateCheckoutOnApproval: only real unapproved drafts', () => {
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: true, alreadyApproved: false }), true);
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: true, alreadyApproved: true }), false);
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: false, alreadyApproved: false }), false);
+  assert.equal(shouldGateCheckoutOnApproval({ hasRealDraft: false, alreadyApproved: true }), false);
+  assert.equal(previewApprovePath('lead-123'), '/preview/lead-123?approve=1');
+  assert.equal(previewApprovePath('../x'), '/preview?approve=1');
+  assert.match(APPROVAL_REQUIRED_MESSAGE, /Approve your draft first/);
+});
+
+test('LogoUpload posts the file to /api/logo', () => {
+  const logoSrc = rfs(jn(HERE, '../components/funnel/LogoUpload.jsx'), 'utf8');
+  assert.ok(logoSrc.includes("fetch('/api/logo'"), 'LogoUpload POSTs to /api/logo');
+  assert.ok(logoSrc.includes("form.append('logo'"), 'sends logo field as FormData');
+});
+
 test('approval: require checkbox before marking approved', () => {
   const approveSrc = rfs(jn(HERE, '../app/api/approve/route.js'), 'utf8');
   assert.ok(approveSrc.includes('approved !== true'), 'rejects if approved !== true');
-  assert.ok(approveSrc.includes("'approved'"), "sets status to 'approved'");
-  assert.ok(approveSrc.includes('payment_status'), 'validates payment before approval');
   assert.ok(approveSrc.includes('recordApproval'), 'records in approvals table');
+  assert.ok(approveSrc.includes('orderId: order?.id || null'), 'order id is optional before payment');
+  assert.ok(!approveSrc.includes('Payment is required before approving'), 'does not require a paid order');
+  assert.ok(approveSrc.includes('hasN8nCompose'), 'requires a finished draft when unpaid');
+  assert.ok(approveSrc.includes('notifyOwnerApproval'), 'owner is still notified on pre-pay approve');
 });
 
 test('status transitions: admin pr-sent endpoint is protected', () => {
@@ -911,6 +1103,18 @@ test('sanitizeLeadFields: articleSource accepted for pdf/paste only (source insp
   assert.ok(leadsSrc.includes("src === 'pdf' || src === 'paste'"), 'only pdf/paste accepted');
   assert.ok(!leadsSrc.includes("src === 'url'"), 'url is not accepted as article_source');
   assert.ok(leadsSrc.includes('article_source'), 'article_source field is handled');
+  assert.ok(
+    leadsSrc.includes('article_source = EXCLUDED.article_source'),
+    'clearing sources can null article_source'
+  );
+  assert.ok(
+    !leadsSrc.includes('article_source = COALESCE(EXCLUDED.article_source'),
+    'stale article_source is not preserved on clear'
+  );
+  assert.ok(
+    leadsSrc.includes("src === '' || src === null"),
+    'empty articleSource clears the lead field'
+  );
 });
 
 test('Telegram config: launch blocker logged when not configured', () => {
@@ -951,7 +1155,7 @@ test('no article → compose fails with honest error, brief preserved', () => {
 // ---------------------------------------------------------------------------
 // Group A: brief wiring (article sources, logo upload, compose-run linkage)
 // ---------------------------------------------------------------------------
-import { sourcesToBriefPatch as srcPatch } from '../lib/brief-shape.js';
+import { articlePatchFromSources as srcPatch } from '../lib/brief-shape.js';
 import { readFileSync as rfsA } from 'node:fs';
 import { fileURLToPath as fUrlA } from 'node:url';
 import { dirname as dnA, join as jnA } from 'node:path';
@@ -987,34 +1191,52 @@ test('sourcesToBriefPatch: removing every source clears the stored article', () 
   assert.ok('articleText' in patch && 'articleUrl' in patch);
 });
 
-test('sourcesToBriefPatch: text wins over a co-present PDF, and is tolerant of junk', () => {
+test('articlePatchFromSources: pasted text wins over a co-present PDF', () => {
+  // The surviving implementation labels the source 'pdf' whenever a PDF is
+  // attached, even if the words came from the paste box. The label is
+  // informational; the text is what compose uses.
   const both = srcPatch([{ type: 'file', value: 'a.pdf' }, { type: 'text', value: 'real text' }]);
   assert.equal(both.articleText, 'real text');
-  assert.equal(both.articleSource, 'paste');
+  assert.equal(both.articleSource, 'pdf');
   assert.deepEqual(srcPatch(null), { articleUrl: '', articleText: '', articleSource: '' });
   assert.deepEqual(srcPatch([null, undefined]), { articleUrl: '', articleText: '', articleSource: '' });
 });
 
 test('BriefForm: article sources are persisted, not just held in React state', () => {
   const src = readA('components/funnel/BriefForm.jsx');
-  assert.match(src, /sourcesToBriefPatch/, 'must map sources back to brief fields');
-  const adds = src.match(/persist\(sourcesToBriefPatch\(next\)\)/g) || [];
-  assert.ok(adds.length >= 2, 'both onAdd and onRemove must persist the source list');
+  assert.match(src, /articlePatchFromSources/, 'sources must map back to brief fields');
+  const calls = (src.match(/persist\(articlePatchFromSources\(next\)\)/g) || []).length;
+  assert.ok(calls >= 2, 'both onAdd and onRemove must persist the source list');
 });
 
-test('BriefForm: compose flushes pending edits and refuses to run on a failed save', () => {
+test('BriefForm: compose waits for the in-flight save before composing', () => {
   const src = readA('components/funnel/BriefForm.jsx');
+  // ComposeWait POSTs /api/brief/complete with no body, so anything still in
+  // flight has to land server-side first or it composes from stale state.
+  assert.match(src, /inflight\.current = request/, 'saves must be trackable');
+  assert.match(src, /if \(inflight\.current\) await inflight\.current/, 'compose must await them');
+  // flushSave() is the named helper doing it: cancel debounce, await in-flight,
+  // then persist fields + article together.
+  assert.match(src, /async function flushSave\(\)/);
+  const flush = src.slice(src.indexOf('async function flushSave()'), src.indexOf('function addSource'));
+  assert.match(flush, /clearTimeout\(debounce\.current\)/, 'must cancel the pending debounce');
+  assert.match(flush, /articlePatchFromSources\(sources\)/, 'sources go with the final save');
   const complete = src.slice(src.indexOf('async function complete('), src.indexOf('if (composing)'));
-  assert.match(complete, /clearTimeout\(debounce\.current\)/, 'must flush the 2s debounce');
-  assert.match(complete, /await persist\(/, 'must await a final save before composing');
+  assert.match(complete, /const saved = await flushSave\(\)/, 'compose must await the flush');
   assert.match(complete, /if \(!saved\) return/, 'must not compose from stale server state');
 });
 
-test('BriefForm: the uploaded logo is sent to /api/logo', () => {
-  const src = readA('components/funnel/BriefForm.jsx');
-  assert.match(src, /fetch\('\/api\/logo', \{ method: 'POST', body \}\)/);
-  assert.match(src, /body\.append\('logo', file\)/);
-  assert.doesNotMatch(src, /<LogoUpload onChange=\{setLogo\}/, 'logo must not dead-end in state');
+test('logo upload: the file reaches /api/logo, not just component state', () => {
+  // The upload lives inside LogoUpload rather than the parent form.
+  const picker = readA('components/funnel/LogoUpload.jsx');
+  assert.match(picker, /fetch\('\/api\/logo', \{ method: 'POST', body: form \}\)/);
+  assert.match(picker, /form\.append\('logo', processed\)/);
+  assert.match(picker, /setPicked\(null\)/, 'a failed upload must retract the success chip');
+  assert.doesNotMatch(
+    readA('components/funnel/BriefForm.jsx'),
+    /<LogoUpload onChange=\{setLogo\} \/>/,
+    'the logo must not dead-end in parent state'
+  );
 });
 
 test('LogoUpload: SVG is rejected client-side to match server validation', () => {
@@ -1340,18 +1562,17 @@ test('logo upload: declared MIME must match the actual bytes', () => {
   assert.equal(validateLogoBuffer(PNG_MAGIC, 'image/png', 9 * 1024 * 1024).ok, false);
 });
 
-test('logo upload: no SVG path survives in storage or the picker', () => {
-  const storeSrc = rfs(jn(HERE, '../lib/logo-storage.js'), 'utf8');
-  assert.ok(!storeSrc.includes("'image/svg+xml'"), 'svg mime is gone from logo-storage');
-  assert.ok(
-    !storeSrc.includes('return true; // unknown mime'),
-    'an unrecognised mime no longer skips the signature check'
-  );
-  // The picker must not offer a format the server will bounce.
-  const pickerSrc = rfs(jn(HERE, '../components/funnel/LogoUpload.jsx'), 'utf8');
-  assert.ok(!pickerSrc.includes('image/svg'), 'LogoUpload no longer accepts SVG');
-  const onboardingSrc = rfs(jn(HERE, '../components/OnboardingForm.jsx'), 'utf8');
-  assert.ok(!onboardingSrc.includes('image/svg'), 'OnboardingForm no longer accepts SVG');
+test('logo upload: SVG can never be stored, in any layer', () => {
+  const storeSrc = readA('lib/logo-storage.js');
+  // Detecting SVG is fine and useful -- inferImageMime names it so that
+  // validateLogoBuffer can bounce it. What matters is that it is not allowed.
+  const allowed = storeSrc.slice(storeSrc.indexOf('const ALLOWED_MIME'), storeSrc.indexOf('const SIGNATURES'));
+  assert.doesNotMatch(allowed, /svg/i, 'svg must not be an allowed mime');
+  assert.doesNotMatch(storeSrc, /return true; \/\/ unknown mime/,
+    'an unrecognised mime no longer skips the signature check');
+  // And the pickers must not offer a format the server will bounce.
+  assert.doesNotMatch(readA('components/funnel/LogoUpload.jsx'), /image\/svg/);
+  assert.doesNotMatch(readA('components/OnboardingForm.jsx'), /image\/svg/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1817,29 +2038,30 @@ test('preview: a recipient with no session gets the draft behind the token', () 
   const src = readA('lib/preview-draft.js');
   assert.match(src, /import \{[^}]*getLeadById[^}]*\} from '\.\/leads'/, 'imported from lib/leads');
   assert.match(src, /getLeadById\(previewToken\)/, 'the token resolves a lead');
-  assert.match(
-    src,
-    /if \(!lead && previewToken !== 'demo'\)/,
-    'only when the session produced no lead of its own'
-  );
+  // The token is resolved first, so a share link works for anyone holding it.
+  // A bare /preview carries no token, falls through to 'demo', and lands on the
+  // session lookup -- so a signed-in owner still sees their own draft.
   assert.ok(
-    src.indexOf('getLeadByEmail(session.email)') < src.indexOf('getLeadById(previewToken)'),
-    'the session lead is still looked up first and still wins'
+    src.indexOf('getLeadById(previewToken)') < src.indexOf('getLeadByEmail(session.email)'),
+    'the token is tried before the session'
   );
+  assert.match(src, /if \(!lead && session\?\.email\)/, 'the session is the fallback');
 });
 
 test('preview: the token lookup fails soft; demo is still the demo draft', () => {
   const src = readA('lib/preview-draft.js');
   // leads.id is a uuid, so a well-formed but unknown token throws in Postgres.
-  const fallback = src.slice(src.indexOf("if (!lead && previewToken !== 'demo')"));
+  const block = src.slice(src.indexOf("if (previewToken !== 'demo')"));
   assert.match(
-    fallback.slice(0, 400),
+    block.slice(0, 400),
     /try \{[\s\S]*getLeadById\(previewToken\)[\s\S]*\} catch/,
     'an unknown token must not blow up the page'
   );
   assert.match(src, /if \(previewToken === 'demo'\) return DEMO_DRAFT;/);
   assert.match(src, /return draftFromBrief\(\{\}\);/, 'a miss still ends at the empty draft');
   assert.ok(!/getLeadById\(token\)/.test(src), 'the unsanitised token never reaches the query');
+  // exactly one lookup by token -- the merge briefly produced two
+  assert.equal((src.match(/getLeadById\(previewToken\)/g) || []).length, 1);
 });
 
 test('auth/start: an IP-limited signup is refused, not congratulated', () => {
@@ -1900,8 +2122,7 @@ test('account: ?paid=1 on its own no longer renders a paid account', () => {
   const decl = src.slice(src.indexOf('const purchased ='), src.indexOf('const v1NeedsBrief'));
   assert.ok(!decl.includes('paidParam'), 'a query string is not evidence of payment');
   // Everything the fake state unlocked hangs off `purchased`.
-  assert.match(src, /const showApproval = purchased &&/);
-  assert.match(src, /const showStatusLadder = purchased && orderStatus;/);
+  assert.match(src, /\{purchased && orderStatus \?/, 'the paid card is gated on purchased');
 });
 
 test('account: the post-checkout claim flow still relies on paid=1', () => {
@@ -1955,3 +2176,21 @@ test('StartFlow: a rate-limited signup never renders the raw error code', () => 
   assert.match(route, /Too many sign-in attempts/, 'the 429 must carry wording');
   assert.match(route, /status: 429/);
 });
+test('BriefForm persists articleText on source change and flushes before compose', () => {
+  const briefSrc = rfs(jn(HERE, '../components/funnel/BriefForm.jsx'), 'utf8');
+  assert.ok(briefSrc.includes('articlePatchFromSources'), 'maps sources to article PATCH fields');
+  assert.ok(briefSrc.includes('hasUsableArticleSource'), 'gates submit on usable article');
+  assert.ok(briefSrc.includes('addSource'), 'persists when a source is added');
+  assert.ok(briefSrc.includes('removeSource'), 'persists when a source is removed');
+  assert.ok(briefSrc.includes('persist(articlePatchFromSources(next))'), 'PATCH article on source change');
+  assert.ok(briefSrc.includes('async function flushSave'), 'flushSave awaits in-flight debounce/PATCH');
+  assert.ok(briefSrc.includes('articlePatchFromSources(sources)'), 'flush includes article from sources');
+  const flushIdx = briefSrc.indexOf('await flushSave()');
+  const composeIdx = briefSrc.indexOf('setComposing(true)');
+  assert.ok(flushIdx !== -1 && composeIdx !== -1 && flushIdx < composeIdx, 'awaits flush before ComposeWait');
+  assert.ok(briefSrc.includes('if (!saved) return'), 'stays on brief when flush save fails');
+  assert.ok(briefSrc.includes('BRIEF.articleMissing'), 'shows article missing near ArticleDrop');
+  assert.ok(briefSrc.includes('error={errors.article}'), 'article error is passed to ArticleDrop');
+  assert.ok(!briefSrc.includes('DEMO_DRAFT'), 'no fake draft on the brief');
+});
+

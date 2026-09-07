@@ -1,8 +1,11 @@
+import { redirect } from 'next/navigation';
 import FunnelShell from '../../components/funnel/FunnelShell';
 import CheckoutScreen from '../../components/funnel/CheckoutScreen';
 import { checkoutSummaryFromBrief } from '../../lib/draft';
 import { getSession } from '../../lib/auth';
-import { getLeadByEmail, leadToBriefJson } from '../../lib/leads';
+import { getApprovalForLead, getLeadForCheckout, leadToBriefJson } from '../../lib/leads';
+import { hasN8nCompose } from '../../lib/compose';
+import { previewApprovePath, shouldGateCheckoutOnApproval } from '../../lib/approval';
 import { looksLikeEmail, safePreviewToken } from '../../lib/url';
 
 export const metadata = {
@@ -14,18 +17,29 @@ export const dynamic = 'force-dynamic';
 
 export default async function CheckoutPage({ searchParams }) {
   const session = getSession();
-  let summary = 'Draft ready';
-  if (session?.email) {
+  const token = safePreviewToken(searchParams?.token);
+  const email = looksLikeEmail(searchParams?.email) || looksLikeEmail(session?.email) || '';
+
+  let lead = null;
+  try {
+    lead = await getLeadForCheckout({ email, token });
+  } catch (err) {
+    console.error('[checkout] lead resume failed:', err?.message);
+  }
+
+  if (lead && hasN8nCompose(lead)) {
+    let alreadyApproved = false;
     try {
-      const lead = await getLeadByEmail(session.email);
-      summary = checkoutSummaryFromBrief(leadToBriefJson(lead).brief);
+      alreadyApproved = Boolean(await getApprovalForLead(lead.id));
     } catch (err) {
-      console.error('[checkout] lead resume failed:', err?.message);
+      console.error('[checkout] approval lookup failed:', err?.message);
+    }
+    if (shouldGateCheckoutOnApproval({ hasRealDraft: true, alreadyApproved })) {
+      redirect(previewApprovePath(lead.id || token));
     }
   }
 
-  const token = safePreviewToken(searchParams?.token);
-  const email = looksLikeEmail(searchParams?.email) || looksLikeEmail(session?.email) || '';
+  const summary = checkoutSummaryFromBrief(leadToBriefJson(lead).brief);
 
   return (
     <FunnelShell width="wide">

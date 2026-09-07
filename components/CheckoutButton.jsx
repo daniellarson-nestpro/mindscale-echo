@@ -29,6 +29,10 @@ export default function CheckoutButton({
         body: JSON.stringify({ plan, next, email, token }),
       });
       const data = await res.json();
+      if (data?.code === 'approval_required' && data.previewUrl) {
+        window.location.assign(data.previewUrl);
+        return;
+      }
       if (!res.ok || !data.url) {
         throw new Error(data.error || 'Checkout is unavailable right now.');
       }

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getStripe } from '../../../lib/stripe';
 import { notifyPaidOrder, upsertOrderFromCheckoutSession } from '../../../lib/orders';
 import { notifyOwnerPaymentSuccess, recordStatusTransition } from '../../../lib/notify';
-import { updateLeadOrderStatus } from '../../../lib/leads';
+import { applyExistingApprovalToPaidOrder, updateLeadOrderStatus } from '../../../lib/leads';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,16 +63,29 @@ export async function POST(request) {
       amountCents: order.amount_cents,
     }).catch(() => {});
 
-    // Mark lead order_status as 'paid'
+    // Mark lead paid, or approved if they already signed off on the draft.
     if (order.lead_id) {
-      updateLeadOrderStatus(order.lead_id, 'paid').catch(() => {});
-      recordStatusTransition({
-        leadId: order.lead_id,
-        orderId: order.id,
-        fromStatus: null,
-        toStatus: 'paid',
-        actor: 'stripe_webhook',
-      }).catch(() => {});
+      (async () => {
+        const applied = await applyExistingApprovalToPaidOrder(order);
+        if (applied) {
+          await recordStatusTransition({
+            leadId: order.lead_id,
+            orderId: order.id,
+            fromStatus: 'paid',
+            toStatus: 'approved',
+            actor: 'stripe_webhook',
+          });
+          return;
+        }
+        await updateLeadOrderStatus(order.lead_id, 'paid');
+        await recordStatusTransition({
+          leadId: order.lead_id,
+          orderId: order.id,
+          fromStatus: null,
+          toStatus: 'paid',
+          actor: 'stripe_webhook',
+        });
+      })().catch(() => {});
     }
   }
 

@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '../../../lib/auth';
 import { isDatabaseConfigured } from '../../../lib/db';
-import { getLeadByEmail } from '../../../lib/leads';
-import { isLogoStorageConfigured, storeLogo, validateLogoBuffer } from '../../../lib/logo-storage';
-import { saveLogoOnLead } from '../../../lib/leads';
+import { getLeadByEmail, saveLogoOnLead } from '../../../lib/leads';
+import {
+  inferImageMime,
+  isLogoStorageConfigured,
+  storeLogo,
+  validateLogoBuffer,
+} from '../../../lib/logo-storage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,6 +20,18 @@ const MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // 8 MB
  * Returns { ok, logoUrl, logoKey, name, type, size } or { ok:false, error }.
  */
 export async function POST(request) {
+  try {
+    return await handleLogoPost(request);
+  } catch (err) {
+    console.error('[api/logo] unhandled:', err?.name || 'Error', err?.message);
+    return NextResponse.json(
+      { ok: false, error: 'Logo upload failed. Please try again.' },
+      { status: 502 }
+    );
+  }
+}
+
+async function handleLogoPost(request) {
   const session = getSession();
   if (!session?.email) {
     return NextResponse.json({ error: 'auth' }, { status: 401 });
@@ -24,7 +40,6 @@ export async function POST(request) {
     return NextResponse.json({ error: 'unavailable' }, { status: 503 });
   }
 
-  // Launch blocker: no storage = clear error, not silent discard
   if (!isLogoStorageConfigured()) {
     return NextResponse.json(
       {
@@ -60,9 +75,7 @@ export async function POST(request) {
     return NextResponse.json({ error: 'No logo file provided.' }, { status: 400 });
   }
 
-  const mimeType = file.type || '';
   const originalName = file.name || 'logo';
-
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
@@ -73,6 +86,7 @@ export async function POST(request) {
     return NextResponse.json({ error: 'Logo file is too large (max 8 MB).' }, { status: 413 });
   }
 
+  const mimeType = file.type || inferImageMime(buffer);
   const validation = validateLogoBuffer(buffer, mimeType, buffer.length);
   if (!validation.ok) {
     return NextResponse.json({ ok: false, error: validation.error }, { status: 422 });
@@ -80,10 +94,12 @@ export async function POST(request) {
 
   const stored = await storeLogo({ buffer, mimeType, originalName, leadId: lead.id });
   if (!stored.ok) {
-    return NextResponse.json({ ok: false, error: stored.error, launchBlocker: stored.launchBlocker }, { status: stored.launchBlocker ? 503 : 502 });
+    return NextResponse.json(
+      { ok: false, error: stored.error, launchBlocker: stored.launchBlocker },
+      { status: stored.launchBlocker ? 503 : 502 }
+    );
   }
 
-  // Save logo metadata onto the lead
   try {
     await saveLogoOnLead({
       leadId: lead.id,
@@ -95,7 +111,6 @@ export async function POST(request) {
     });
   } catch (err) {
     console.error('[api/logo] save logo on lead failed:', err?.message);
-    // Storage succeeded but DB write failed — not fatal for the user
   }
 
   console.info('[api/logo] logo stored', { leadId: lead.id, type: stored.type });
