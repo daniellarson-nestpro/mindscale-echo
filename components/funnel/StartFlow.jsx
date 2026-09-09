@@ -137,7 +137,7 @@ export default function StartFlow() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || STEP_EMAIL.failed);
+      if (!res.ok) throw new Error(data.message || data.error || STEP_EMAIL.failed);
       router.push(`/start/verify?email=${encodeURIComponent(email.trim())}`);
     } catch (err) {
       setEmailError(err.message);

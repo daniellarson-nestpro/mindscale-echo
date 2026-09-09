@@ -5,11 +5,8 @@ import { PLANS, priceIdFor, isPlaceholderPriceId } from '../../../lib/plans';
 import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../../../lib/url';
 import { getApprovalForLead, getLeadForCheckout } from '../../../lib/leads';
 import { hasN8nCompose } from '../../../lib/compose';
-import {
-  APPROVAL_REQUIRED_MESSAGE,
-  previewApprovePath,
-  shouldGateCheckoutOnApproval,
-} from '../../../lib/approval.js';
+import { APPROVAL_REQUIRED_MESSAGE } from '../../../lib/approval.js';
+import { checkoutGateFor, DRAFT_REQUIRED_MESSAGE } from '../../../lib/funnel-gates.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -72,20 +69,27 @@ export async function POST(request) {
     // Non-fatal: metadata enrichment only
   }
 
-  if (hasN8nCompose(lead)) {
-    let alreadyApproved = false;
+  const hasRealDraft = hasN8nCompose(lead);
+  let alreadyApproved = false;
+  if (lead && hasRealDraft) {
     try {
       alreadyApproved = Boolean(await getApprovalForLead(lead.id));
     } catch {
       alreadyApproved = false;
     }
-    if (shouldGateCheckoutOnApproval({ hasRealDraft: true, alreadyApproved })) {
-      const previewUrl = previewApprovePath(lead.id || token);
-      return NextResponse.json(
-        { error: APPROVAL_REQUIRED_MESSAGE, code: 'approval_required', previewUrl },
-        { status: 403 }
-      );
-    }
+  }
+  const away = checkoutGateFor({ lead, hasRealDraft, alreadyApproved, token });
+  if (away === '/brief') {
+    return NextResponse.json(
+      { error: DRAFT_REQUIRED_MESSAGE, code: 'draft_required', redirect: '/brief' },
+      { status: 409 }
+    );
+  }
+  if (away) {
+    return NextResponse.json(
+      { error: APPROVAL_REQUIRED_MESSAGE, code: 'approval_required', previewUrl: away },
+      { status: 403 }
+    );
   }
 
   const successPath = nextPath

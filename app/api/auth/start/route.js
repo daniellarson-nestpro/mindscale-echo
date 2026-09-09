@@ -10,7 +10,7 @@ import {
   pendingCookieOptions,
   safeRelativePath,
 } from '../../../../lib/auth';
-import { V2_LINK_TTL_MS, startOkBody } from '../../../../lib/codes';
+import { V2_LINK_TTL_MS, startOkBody, startResponseAfterSend } from '../../../../lib/codes';
 import { isDatabaseConfigured } from '../../../../lib/db';
 import { buildLoginUrl, sendVerificationCodeEmail, siteOrigin } from '../../../../lib/email';
 import { upsertLead } from '../../../../lib/leads';
@@ -101,11 +101,17 @@ export async function POST(request) {
     code: issued.code,
   });
 
+  const production = process.env.NODE_ENV === 'production';
   if (!mail.sent) {
-    console.info('[auth/start] code issued; email not sent:', mail.reason, email);
-    if (process.env.NODE_ENV !== 'production') {
+    console.error('[auth/start] code issued; email not sent:', mail.reason, email);
+    if (!production) {
       console.info('[auth/start] dev code:', issued.code, 'url:', loginUrl);
     }
+  }
+
+  const answer = startResponseAfterSend({ email, sent: mail.sent, production });
+  if (answer.status !== 200) {
+    return NextResponse.json(answer.body, { status: answer.status });
   }
 
   const pendingToken = createPendingToken({ email, linkId: issued.id });

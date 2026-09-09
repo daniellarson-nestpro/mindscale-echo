@@ -1,4 +1,6 @@
+import { redirect } from 'next/navigation';
 import FunnelShell from '../../../components/funnel/FunnelShell';
+import { previewPagePathFor } from '../../../lib/funnel-gates';
 import PreviewScreen from '../../../components/funnel/PreviewScreen';
 import { PLANS } from '../../../lib/plans';
 import { loadPreviewDraft } from '../../../lib/preview-draft';
@@ -36,9 +38,16 @@ async function resolvePreviewLead(token, session) {
 
 export default async function PreviewPage({ params, searchParams }) {
   const session = getSession();
-  const draft = await loadPreviewDraft(params?.token);
   const lead = await resolvePreviewLead(params?.token, session);
   const requiresApproval = hasN8nCompose(lead);
+  const away = previewPagePathFor({
+    token: safePreviewToken(params?.token),
+    sessionEmail: session?.email || '',
+    lead,
+    hasRealDraft: requiresApproval,
+  });
+  if (away) redirect(away);
+  const draft = await loadPreviewDraft(params?.token);
   const alreadyApproved = lead?.id
     ? Boolean(await getApprovalForLead(lead.id).catch(() => null))
     : false;
