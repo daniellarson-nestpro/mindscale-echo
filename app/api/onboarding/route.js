@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { getSession, normalizeEmail } from '../../../lib/auth';
 import { getStripe } from '../../../lib/stripe';
 import { attachBrief } from '../../../lib/orders';
+import { saveLeadFromPayload, upsertLead } from '../../../lib/leads';
+import { isDatabaseConfigured } from '../../../lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -141,6 +143,22 @@ export async function POST(request) {
     }
   }
 
+  try {
+    await upsertLead(actorEmail, {
+      contactName: payload.contactName,
+      companyName: payload.companyName,
+      website: payload.website,
+      announcementType: payload.announcementType,
+      articleUrl: payload.articleUrl,
+      quote: payload.quote,
+      quoteAttribution: payload.quoteAttribution,
+      notes: payload.notes,
+      furthestStep: 'account',
+    });
+  } catch (err) {
+    console.error('[onboarding] lead sync failed:', err?.message);
+  }
+
   console.log('[onboarding] brief received', {
     orderId: saved.order?.id,
     sessionId: payload.sessionId,
@@ -150,4 +168,36 @@ export async function POST(request) {
   });
 
   return NextResponse.json({ ok: true, orderId: saved.order?.id });
+}
+
+/**
+ * Authenticated autosave onto the lead (unpurchased briefs).
+ * Same camelCase field names as POST. articleFile is ignored here —
+ * HOOK (storage): persist article binary via R2/S3 in a later PR.
+ */
+export async function PATCH(request) {
+  const session = getSession();
+  if (!session?.email) {
+    return NextResponse.json({ ok: false, error: 'auth' }, { status: 401 });
+  }
+  if (!isDatabaseConfigured()) {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: 'invalid' }, { status: 400 });
+  }
+
+  const payload = body && typeof body === 'object' ? body : {};
+  // articleFile / logo binary intentionally discarded in this slice.
+  const saved = await saveLeadFromPayload(session.email, payload);
+
+  if (saved.error === 'database') {
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  return NextResponse.json({ ok: true });
 }

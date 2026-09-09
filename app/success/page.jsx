@@ -71,6 +71,9 @@ export default async function SuccessPage({ searchParams }) {
                   ? `You can log back in anytime with ${email}. We’ll send a one-time link — no password.`
                   : 'You can log back in anytime with the email from your Stripe receipt.'}
               </p>
+              <p className="mt-4 font-mono text-[10px] uppercase tracking-eyebrow text-echo-mint">
+                Draft back to you within 2 business days
+              </p>
 
               <div className="mt-8 flex flex-wrap items-center justify-center gap-2.5">
                 {plan && (

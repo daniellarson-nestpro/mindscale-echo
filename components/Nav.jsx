@@ -1,19 +1,36 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { ArrowUpRight } from './Icons';
 import AuthNavLink from './AuthNavLink';
 
 const LINKS = [
-  { href: '/#how-it-works', label: 'How it works' },
-  { href: '/#distribution', label: 'Distribution' },
-  { href: '/#pricing', label: 'Pricing' },
-  { href: '/#dashboard', label: 'Dashboard' },
-  { href: '/#faq', label: 'FAQ' },
+  { id: 'reach', label: 'Reach' },
+  { id: 'trophy', label: 'Example' },
+  { id: 'how-it-works', label: 'How it works' },
+  { id: 'pricing', label: 'Pricing' },
+  { id: 'faq', label: 'FAQ' },
 ];
 
 export default function Nav({ userEmail = '' }) {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+
+  // Same-page anchors on the landing page (no navigation, no dependency on
+  // being served from the domain root); absolute links from /success, /cancel.
+  const isHome = pathname === '/';
+  const to = (id) => (isHome ? `#${id}` : `/#${id}`);
+  const links = LINKS.map((l) => ({ ...l, href: to(l.id) }));
+  const buyHref = to('pricing');
+
+  // Release the scroll lock synchronously: React's state update is batched, so
+  // clearing it in an effect can land after the browser's fragment jump — and
+  // a locked body silently cancels that scroll on mobile.
+  const closeAndJump = () => {
+    document.body.style.overflow = '';
+    setOpen(false);
+  };
 
   useEffect(() => {
     document.body.style.overflow = open ? 'hidden' : '';
@@ -36,7 +53,7 @@ export default function Nav({ userEmail = '' }) {
               'inset 0 0 0 1px rgba(255,255,255,0.09), inset 0 1px 0 rgba(255,255,255,0.13), 0 24px 60px -30px rgba(0,0,0,0.95)',
           }}
         >
-          <a href="/#top" className="flex shrink-0 items-center gap-2.5">
+          <a href={isHome ? "#top" : "/#top"} className="flex shrink-0 items-center gap-2.5">
             <Mark />
             <span className="font-display text-[0.98rem] tracking-[-0.02em] text-white">
               Mindscale <span className="text-white/45">Echo</span>
@@ -44,7 +61,7 @@ export default function Nav({ userEmail = '' }) {
           </a>
 
           <ul className="hidden items-center gap-8 lg:flex">
-            {LINKS.map((l) => (
+            {links.map((l) => (
               <li key={l.href}>
                 <a
                   href={l.href}
@@ -77,8 +94,8 @@ export default function Nav({ userEmail = '' }) {
             ) : (
               <AuthNavLink className="text-[0.85rem] text-white/55 transition-colors duration-500 ease-haptic hover:text-white" />
             )}
-            <a href="/#pricing" className="btn btn-primary hidden text-[0.85rem] sm:inline-flex">
-              Launch Your Release
+            <a href={buyHref} className="btn btn-primary hidden text-[0.85rem] sm:inline-flex">
+              Launch My Release
               <span className="btn-nib">
                 <ArrowUpRight />
               </span>
@@ -121,7 +138,7 @@ export default function Nav({ userEmail = '' }) {
         }}
       >
         <ul className="space-y-2">
-          {LINKS.map((l, i) => (
+          {links.map((l, i) => (
             <li
               key={l.href}
               style={{
@@ -132,7 +149,7 @@ export default function Nav({ userEmail = '' }) {
             >
               <a
                 href={l.href}
-                onClick={() => setOpen(false)}
+                onClick={closeAndJump}
                 className="block py-2 font-display text-[2.6rem] leading-none text-white"
               >
                 {l.label}
@@ -165,8 +182,8 @@ export default function Nav({ userEmail = '' }) {
           />
         )}
         <a
-          href="/#pricing"
-          onClick={() => setOpen(false)}
+          href={buyHref}
+          onClick={closeAndJump}
           className="btn btn-primary mt-12 w-max"
           style={{
             transform: open ? 'translateY(0)' : 'translateY(3rem)',
@@ -175,7 +192,7 @@ export default function Nav({ userEmail = '' }) {
               'transform 800ms cubic-bezier(0.16,1,0.3,1) 420ms, opacity 800ms cubic-bezier(0.16,1,0.3,1) 420ms',
           }}
         >
-          Launch Your Release
+          Launch My Release
           <span className="btn-nib">
             <ArrowUpRight />
           </span>
