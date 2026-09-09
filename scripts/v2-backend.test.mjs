@@ -11,10 +11,12 @@ import {
   isValidCode,
   normalizeCode,
   startOkBody,
+  startResponseAfterSend,
   verifyErrorBody,
   verifySuccessBody,
 } from '../lib/codes.js';
 import { inferStepFromLead, ladderState, pathForStep, resolveFurthestStep, hasComposeDraft } from '../lib/progress.js';
+import { checkoutGateFor, previewIndexPathFor, previewPagePathFor } from '../lib/funnel-gates.js';
 import { createRateLimiter } from '../lib/rate-limit.js';
 import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
 import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
@@ -158,30 +160,103 @@ test('start context persists onto lead fields like prefill', () => {
   assert.equal(merged.articleUrl, undefined);
 });
 
-test('furthestStep and ladder from lead/order state', () => {
+test('a lead with no draft always resumes at the brief', () => {
   assert.equal(resolveFurthestStep(null, []), 'brief');
   assert.equal(pathForStep('brief'), '/brief');
   assert.equal(pathForStep('account'), '/account');
-  assert.equal(inferStepFromLead({ company_name: 'Acme', announcement_type: 'launch' }), 'preview');
-  assert.equal(
-    inferStepFromLead({
-      company_name: 'Acme',
-      announcement_type: 'launch',
-      article_url: 'https://news.example/story',
-    }),
-    'checkout'
-  );
+  // /start collects article + milestone before the email gate. Filled-in
+  // fields are not progress: nothing has been written yet.
+  const started = {
+    company_name: 'Acme',
+    announcement_type: 'launch',
+    article_text: 'x'.repeat(200),
+    article_url: 'https://news.example/story',
+  };
+  assert.equal(inferStepFromLead(started), 'brief');
+  assert.equal(resolveFurthestStep(started, []), 'brief');
+  // Rows written by the old inference stored 'preview' / 'checkout' with no
+  // draft behind them. A stored step past the brief needs a draft to back it.
+  assert.equal(resolveFurthestStep({ ...started, furthest_step: 'preview' }, []), 'brief');
+  assert.equal(resolveFurthestStep({ ...started, furthest_step: 'checkout' }, []), 'brief');
+});
+
+test('a saved compose draft resumes at preview; a paid order at account', () => {
+  const drafted = { company_name: 'Acme', compose_json: { ok: true, source: 'n8n' } };
+  assert.equal(inferStepFromLead(drafted), 'preview');
+  assert.equal(resolveFurthestStep(drafted, []), 'preview');
+  assert.equal(resolveFurthestStep({ ...drafted, furthest_step: 'checkout' }, []), 'checkout');
   assert.equal(resolveFurthestStep({ furthest_step: 'brief' }, [{ payment_status: 'paid' }]), 'account');
+});
+
+test('ladder only reports a draft when compose_json holds one', () => {
   assert.equal(ladderState(null, []), 'empty');
   assert.equal(ladderState({ company_name: 'Acme' }, []), 'in_progress');
+  assert.equal(ladderState({ verified_at: '2026-09-09T00:00:00Z' }, []), 'in_progress');
   assert.equal(
     ladderState(
       { company_name: 'Acme', announcement_type: 'launch', article_url: 'https://news.example/x' },
       []
     ),
-    'draft_ready_unpurchased'
+    'in_progress'
   );
+  assert.equal(ladderState({ compose_json: { ok: true, source: 'n8n' } }, []), 'draft_ready_unpurchased');
   assert.equal(ladderState({}, [{ payment_status: 'paid' }]), 'purchased');
+});
+
+test('checkout: anonymous demo stays open, a lead without a draft goes back to the brief', () => {
+  assert.equal(checkoutGateFor({ lead: null, hasRealDraft: false, alreadyApproved: false, token: 'demo' }), null);
+  const lead = { id: 'lead-1', email: 'a@b.co' };
+  assert.equal(checkoutGateFor({ lead, hasRealDraft: false, alreadyApproved: false, token: 'lead-1' }), '/brief');
+  assert.equal(
+    checkoutGateFor({ lead, hasRealDraft: true, alreadyApproved: false, token: 'lead-1' }),
+    '/preview/lead-1?approve=1'
+  );
+  assert.equal(checkoutGateFor({ lead, hasRealDraft: true, alreadyApproved: true, token: 'lead-1' }), null);
+});
+
+test('preview index: demo when signed out, own draft when one exists, brief otherwise', () => {
+  assert.equal(previewIndexPathFor({ sessionEmail: '', lead: null, hasRealDraft: false }), '/preview/demo');
+  assert.equal(
+    previewIndexPathFor({ sessionEmail: 'a@b.co', lead: { id: 'lead-1' }, hasRealDraft: true }),
+    '/preview/lead-1'
+  );
+  assert.equal(previewIndexPathFor({ sessionEmail: 'a@b.co', lead: { id: 'lead-1' }, hasRealDraft: false }), '/brief');
+  assert.equal(previewIndexPathFor({ sessionEmail: 'a@b.co', lead: null, hasRealDraft: false }), '/brief');
+});
+
+test('preview page: a signed-in lead with no draft never sees their brief dressed up as a release', () => {
+  const lead = { id: 'lead-1', email: 'a@b.co' };
+  assert.equal(previewPagePathFor({ token: 'demo', sessionEmail: 'a@b.co', lead, hasRealDraft: false }), '/brief');
+  assert.equal(previewPagePathFor({ token: 'lead-1', sessionEmail: 'a@b.co', lead, hasRealDraft: false }), '/brief');
+  assert.equal(previewPagePathFor({ token: 'lead-1', sessionEmail: 'a@b.co', lead, hasRealDraft: true }), null);
+  // Share links and the signed-out demo render as before.
+  assert.equal(previewPagePathFor({ token: 'lead-1', sessionEmail: '', lead, hasRealDraft: false }), null);
+  assert.equal(previewPagePathFor({ token: 'demo', sessionEmail: '', lead: null, hasRealDraft: false }), null);
+  // Someone else's lead id while signed in is not yours to be redirected for.
+  assert.equal(
+    previewPagePathFor({
+      token: 'lead-9',
+      sessionEmail: 'a@b.co',
+      lead: { id: 'lead-9', email: 'z@z.co' },
+      hasRealDraft: false,
+    }),
+    null
+  );
+});
+
+test('start: an unsent code is a 503 in production, never "check your email"', () => {
+  const okRes = startResponseAfterSend({ email: 'a@b.co', sent: true, production: true });
+  assert.equal(okRes.status, 200);
+  assert.deepEqual(okRes.body, startOkBody('a@b.co'));
+  const failed = startResponseAfterSend({ email: 'a@b.co', sent: false, production: true });
+  assert.equal(failed.status, 503);
+  assert.equal(failed.body.ok, false);
+  assert.equal(failed.body.error, 'send_failed');
+  assert.match(failed.body.message, /code/i);
+  // Outside production the code is logged to the console instead, so the
+  // local flow keeps working without a mail provider.
+  const dev = startResponseAfterSend({ email: 'a@b.co', sent: false, production: false });
+  assert.equal(dev.status, 200);
 });
 
 test('prefill drops garbage fields silently', () => {
@@ -1224,7 +1299,8 @@ test('preview is the pre-pay approval surface', () => {
   assert.ok(!previewSrc.includes('/login'), 'preview does not use the post-pay login page');
   assert.ok(previewPage.includes('requiresApproval'), 'preview page passes real-draft flag');
   assert.ok(previewPage.includes('getApprovalForLead'), 'preview page loads existing approval');
-  assert.ok(checkoutPage.includes('redirect(previewApprovePath'), 'checkout page bounces unapproved drafts');
+  assert.ok(checkoutPage.includes('checkoutGateFor('), 'checkout page asks the gate where to send the visitor');
+  assert.ok(checkoutPage.includes('redirect(away)'), 'checkout page bounces unapproved and draft-less leads');
   assert.ok(webhookSrc.includes('applyExistingApprovalToPaidOrder'), 'webhook reuses pre-pay approval');
   assert.ok(leadsSrc.includes('orderId || null'), 'approvals.order_id can be null');
   assert.ok(leadsSrc.includes('attachOrderIdToApproval'), 'paid order can attach later');

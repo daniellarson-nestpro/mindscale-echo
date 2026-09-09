@@ -5,3 +5,16 @@ out
 .env.local
 .DS_Store
 npm-debug.log*
+
+.vercel
+
+# Real customer article PDFs used for extraction/parity testing.
+# Not committed: third-party article content, and ~20MB of binaries.
+fixtures/
+
+# Local credential scratch file — never commit.
+\#scout*.txt
+*neon and open router*
+
+.env*.local
+.gstack/
