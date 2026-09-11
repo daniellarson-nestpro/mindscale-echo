@@ -1,7 +1,16 @@
+import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { isDatabaseConfigured, getSql } from '../../../../lib/db';
 import { updateLeadOrderStatus } from '../../../../lib/leads';
-import { recordStatusTransition } from '../../../../lib/notify';
+import { notifyPrSent, recordStatusTransition } from '../../../../lib/notify';
+
+/** Constant-time compare so the secret cannot be recovered byte by byte. */
+function secretMatches(provided, expected) {
+  const a = Buffer.from(String(provided || ''));
+  const b = Buffer.from(String(expected || ''));
+  if (a.length === 0 || a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,7 +35,7 @@ export async function POST(request) {
 
   const authHeader = request.headers.get('authorization') || '';
   const provided = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!provided || provided !== adminSecret) {
+  if (!secretMatches(provided, adminSecret)) {
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   }
 
@@ -51,7 +60,8 @@ export async function POST(request) {
   // Verify the lead is in 'approved' state
   let lead;
   try {
-    const rows = await sql`SELECT id, order_status FROM leads WHERE id = ${leadId} LIMIT 1`;
+    // email is needed to tell the customer their release went out.
+    const rows = await sql`SELECT id, email, order_status FROM leads WHERE id = ${leadId} LIMIT 1`;
     lead = rows[0];
   } catch (err) {
     console.error('[admin/pr-sent] lead lookup failed:', err?.message);
@@ -86,6 +96,10 @@ export async function POST(request) {
     toStatus: 'pr_sent',
     actor: 'owner',
   });
+
+  // Delivers the "we will notify you when it is sent" promise made at approval.
+  // Never allowed to fail the transition — the status change already happened.
+  notifyPrSent({ leadId, orderId: orderId || null, email: lead.email }).catch(() => {});
 
   console.info('[admin/pr-sent] pr_sent', { leadId, orderId });
 

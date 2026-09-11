@@ -18,7 +18,7 @@ import {
 import { inferStepFromLead, ladderState, pathForStep, resolveFurthestStep, hasComposeDraft } from '../lib/progress.js';
 import { checkoutGateFor, previewIndexPathFor, previewPagePathFor } from '../lib/funnel-gates.js';
 import { createRateLimiter } from '../lib/rate-limit.js';
-import { isPrivateIPv4, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
+import { isPrivateIPv4, isPrivateIPv6, isPrivateIp, parsePublicHttpUrl } from '../lib/ssrf.js';
 import { extractArticleText, parseArticleHtml } from '../lib/article-html.js';
 import { cleanPhone, mergeStartLeadFields, sanitizeContext, sanitizePrefill } from '../lib/prefill-fields.js';
 import { formatChipDate, normalizeArticleInput, toHyperagentArticle } from '../lib/article-shape.js';
@@ -42,13 +42,6 @@ import {
   composeLockAllowsNewRun,
   hasN8nCompose,
 } from '../lib/compose.js';
-import {
-  callN8nCompose,
-  DEFAULT_N8N_WEBHOOK_URL,
-  n8nRequestHeaders,
-  n8nWebhookHost,
-  n8nWebhookUrl,
-} from '../lib/n8n.js';
 import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePath } from '../lib/url.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -201,6 +194,65 @@ test('ladder only reports a draft when compose_json holds one', () => {
   );
   assert.equal(ladderState({ compose_json: { ok: true, source: 'n8n' } }, []), 'draft_ready_unpurchased');
   assert.equal(ladderState({}, [{ payment_status: 'paid' }]), 'purchased');
+});
+
+const N8N_DRAFT_JSON = JSON.stringify({ ok: true, source: 'n8n', headline: 'Acme opens' });
+
+test('progress: a filled-in brief is not progress past the brief', () => {
+  // /start collects company name, announcement type and article text before the
+  // email gate. Inferring 'checkout' from that trio sent every new customer from
+  // email verification straight to a payment page, skipping the brief and the
+  // compose — asking them to pay for a release nobody had written yet.
+  assert.equal(inferStepFromLead({ company_name: 'Acme', announcement_type: 'launch' }), 'brief');
+  assert.equal(
+    inferStepFromLead({
+      company_name: 'Acme',
+      announcement_type: 'launch',
+      article_text: 'Acme opened a second depot in Duluth this week.',
+    }),
+    'brief'
+  );
+  assert.equal(
+    inferStepFromLead({
+      company_name: 'Acme',
+      announcement_type: 'launch',
+      article_url: 'https://news.example/story',
+    }),
+    'brief'
+  );
+});
+
+test('progress: only a real draft advances the step', () => {
+  assert.equal(inferStepFromLead({ compose_json: N8N_DRAFT_JSON }), 'preview');
+  assert.equal(pathForStep(inferStepFromLead({ compose_json: N8N_DRAFT_JSON })), '/preview');
+  // a template/local payload is not a draft
+  assert.equal(inferStepFromLead({ compose_json: '{"ok":true,"source":"template"}' }), 'brief');
+});
+
+test('progress: the ladder says draft-ready only when a draft exists', () => {
+  const filledBrief = {
+    company_name: 'Acme',
+    announcement_type: 'launch',
+    article_url: 'https://news.example/x',
+  };
+  assert.equal(ladderState(filledBrief, []), 'in_progress', 'no draft yet');
+  assert.equal(ladderState({ ...filledBrief, compose_json: N8N_DRAFT_JSON }, []), 'draft_ready_unpurchased');
+  // verified but empty still counts as started
+  assert.equal(ladderState({ verified_at: '2026-09-06T00:00:00Z' }, []), 'in_progress');
+});
+
+test('progress: verifying email lands a new customer on the brief, not checkout', () => {
+  // The redirect after the magic link is pathForStep(resolveFurthestStep(...)).
+  const justStarted = {
+    company_name: 'Acme',
+    announcement_type: 'launch',
+    article_text: 'Acme opened a second depot in Duluth this week.',
+    furthest_step: 'brief',
+    verified_at: '2026-09-06T00:00:00Z',
+  };
+  assert.equal(pathForStep(resolveFurthestStep(justStarted, [])), '/brief');
+  const callback = readA('app/api/auth/callback/route.js');
+  assert.match(callback, /pathForStep\(progress\.furthestStep\)/, 'callback routes on the step');
 });
 
 test('checkout: anonymous demo stays open, a lead without a draft goes back to the brief', () => {
@@ -655,127 +707,8 @@ test('articleText falls back to scrape, then notes/quote', async () => {
   assert.equal(existing.articleText, 'Pasted article.');
 });
 
-test('n8n webhook url never uses webhook-test and defaults when unset', () => {
-  const prevUrl = process.env.N8N_WEBHOOK_URL;
-  const prevSecret = process.env.N8N_WEBHOOK_SECRET;
-  try {
-    delete process.env.N8N_WEBHOOK_URL;
-    assert.equal(n8nWebhookUrl(), DEFAULT_N8N_WEBHOOK_URL);
-    assert.equal(DEFAULT_N8N_WEBHOOK_URL.includes('webhook-test'), false);
-    assert.match(DEFAULT_N8N_WEBHOOK_URL, /\/webhook\/press-release$/);
-    assert.equal(
-      n8nWebhookUrl('https://nestpro.app.n8n.cloud/webhook-test/press-release'),
-      'https://nestpro.app.n8n.cloud/webhook/press-release'
-    );
-    assert.equal(n8nRequestHeaders('').hasOwnProperty('X-API-Key'), false);
-    assert.equal(n8nRequestHeaders('secret-key')['X-API-Key'], 'secret-key');
-  } finally {
-    if (prevUrl === undefined) delete process.env.N8N_WEBHOOK_URL;
-    else process.env.N8N_WEBHOOK_URL = prevUrl;
-    if (prevSecret === undefined) delete process.env.N8N_WEBHOOK_SECRET;
-    else process.env.N8N_WEBHOOK_SECRET = prevSecret;
-  }
-});
 
-test('n8n compose branches on ok, not HTTP status', async () => {
-  const prevSecret = process.env.N8N_WEBHOOK_SECRET;
-  process.env.N8N_WEBHOOK_SECRET = 'test-n8n-secret';
-  try {
-    let captured;
-    const okFetch = async (url, opts) => {
-      captured = { url, opts };
-      return {
-        status: 200,
-        json: async () => ({
-          ok: true,
-          headline: 'Northline opens',
-          subhead: '',
-          dateline: 'COLUMBUS, OH — September 3, 2026',
-          body: ['Para one.'],
-          quote: 'We opened.',
-          quoteAttribution: 'Dana',
-          boilerplate: 'Northline is a shop.',
-          contactLine: 'Dana, dana@northline.com',
-          error: '',
-        }),
-      };
-    };
-    const ok = await callN8nCompose(
-      { companyName: 'Northline' },
-      { fetchImpl: okFetch, url: DEFAULT_N8N_WEBHOOK_URL, secret: 'test-n8n-secret' }
-    );
-    assert.equal(ok.ok, true);
-    assert.equal(ok.draft.headline, 'Northline opens');
-    assert.equal(captured.url, DEFAULT_N8N_WEBHOOK_URL);
-    assert.equal(captured.opts.method, 'POST');
-    assert.equal(captured.opts.headers['X-API-Key'], 'test-n8n-secret');
-    assert.equal(JSON.parse(captured.opts.body).companyName, 'Northline');
 
-    const falseOk = await callN8nCompose(
-      { companyName: 'Northline' },
-      {
-        fetchImpl: async () => ({
-          status: 200,
-          json: async () => ({ ok: false, error: 'model_failed' }),
-        }),
-      }
-    );
-    assert.equal(falseOk.ok, false);
-    assert.equal(falseOk.error, 'model_failed');
-    assert.equal(statusForComposeError(falseOk.error), 200);
-
-    const timeout = await callN8nCompose(
-      { companyName: 'Northline' },
-      {
-        timeoutMs: 20,
-        fetchImpl: (_url, opts) =>
-          new Promise((_resolve, reject) => {
-            opts.signal.addEventListener('abort', () => {
-              const err = new Error('aborted');
-              err.name = 'AbortError';
-              reject(err);
-            });
-          }),
-      }
-    );
-    assert.equal(timeout.ok, false);
-    assert.equal(timeout.error, 'timeout');
-    assert.equal(statusForComposeError('timeout'), 502);
-    assert.equal(statusForComposeError('network'), 502);
-  } finally {
-    if (prevSecret === undefined) delete process.env.N8N_WEBHOOK_SECRET;
-    else process.env.N8N_WEBHOOK_SECRET = prevSecret;
-  }
-});
-
-test('callN8nCompose logs host, duration, ok, error without secrets', async () => {
-  const logs = [];
-  const orig = console.info;
-  console.info = (...args) => logs.push(args);
-  try {
-    await callN8nCompose(
-      { companyName: 'Northline' },
-      {
-        url: DEFAULT_N8N_WEBHOOK_URL,
-        fetchImpl: async () => ({
-          status: 200,
-          json: async () => ({ ok: false, error: 'articleText too brief' }),
-        }),
-      }
-    );
-  } finally {
-    console.info = orig;
-  }
-  const line = logs.find((args) => String(args[0]).includes('[n8n compose]'));
-  assert.ok(line);
-  const payload = line[1];
-  assert.equal(payload.host, 'nestpro.app.n8n.cloud');
-  assert.equal(n8nWebhookHost(), 'nestpro.app.n8n.cloud');
-  assert.equal(payload.ok, false);
-  assert.equal(payload.error, 'articleText too brief');
-  assert.equal(typeof payload.durationMs, 'number');
-  assert.equal(JSON.stringify(payload).includes('X-API-Key'), false);
-});
 
 test('only source n8n is reusable; template json is not success', async () => {
   const now = Date.parse('2026-09-03T12:00:00Z');
@@ -905,7 +838,7 @@ test('brief/complete is server-only n8n; ComposeWait branches on ok', () => {
   const waitSrc = readFileSync(join(here, '../components/funnel/ComposeWait.jsx'), 'utf8');
   const previewSrc = readFileSync(join(here, '../lib/preview-draft.js'), 'utf8');
   const plateSrc = readFileSync(join(here, '../app/api/preview/[token]/plate/route.js'), 'utf8');
-  assert.equal(completeSrc.includes('callN8nCompose'), true);
+  assert.equal(completeSrc.includes('composeRelease'), true);
   assert.equal(completeSrc.includes('canReuseN8nCompose'), true);
   assert.equal(completeSrc.includes('draftFromBrief'), false);
   assert.equal(completeSrc.includes('maxDuration'), true);
@@ -1123,13 +1056,12 @@ test('logo route infers MIME and wraps unhandled errors as JSON 502', () => {
 
 test('compose_runs: exact payload saved BEFORE n8n call', () => {
   const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
-  // createComposeRun must be called before callN8nCompose
-  // Find the call sites (await createComposeRun / await callN8nCompose), not imports
+  // createComposeRun must be called before the model is invoked
   const createIdx = completeSrc.indexOf('await createComposeRun');
-  const callIdx = completeSrc.indexOf('await callN8nCompose');
+  const callIdx = completeSrc.indexOf('await composeRelease');
   assert.ok(createIdx > 0, 'await createComposeRun is used');
-  assert.ok(callIdx > 0, 'await callN8nCompose is used');
-  assert.ok(createIdx < callIdx, 'createComposeRun awaited BEFORE callN8nCompose');
+  assert.ok(callIdx > 0, 'await composeRelease is used');
+  assert.ok(createIdx < callIdx, 'createComposeRun awaited BEFORE the compose call');
 });
 
 test('n8n ok:true → saves response and exposes draft', () => {
@@ -1145,7 +1077,7 @@ test('n8n ok:false/timeout → never exposes fake draft', () => {
   assert.ok(!completeSrc.includes('draftFromBrief'), 'no template fallback in compose route');
   assert.ok(completeSrc.includes('failResponse'), 'returns failure on n8n error');
   assert.ok(completeSrc.includes('notifyOwnerComposeFailed'), 'notifies owner on failure');
-  assert.ok(completeSrc.includes('markComposeFinished'), 'unlocks compose on failure');
+  assert.ok(completeSrc.includes('releaseComposeLock'), 'unlocks compose on failure');
 });
 
 test('compose payload includes composeRunId and correct fields', () => {
@@ -1184,65 +1116,8 @@ test('n8n retry classification: timeout/network = transient', () => {
   assert.equal(statusForComposeError('insufficient_article'), 200);
 });
 
-test('n8n mock: ok:true response shape', async () => {
-  let capturedPayload = null;
-  const mockFetch = async (url, opts) => {
-    capturedPayload = JSON.parse(opts.body);
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        ok: true,
-        headline: 'Acme Opens New Factory',
-        body: ['Para one.'],
-        source: 'n8n',
-      }),
-    };
-  };
 
-  const result = await callN8nCompose(
-    { leadId: 'ld1', articleText: 'Some article', companyName: 'Acme' },
-    { fetchImpl: mockFetch, timeoutMs: 5000 }
-  );
-  assert.equal(result.ok, true);
-  assert.equal(result.draft?.headline, 'Acme Opens New Factory');
-  assert.ok(capturedPayload, 'payload was sent');
-});
 
-test('n8n mock: ok:false response never returns draft', async () => {
-  const mockFetch = async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ ok: false, error: 'model_failed' }),
-  });
-
-  const result = await callN8nCompose(
-    { leadId: 'ld1', articleText: 'article' },
-    { fetchImpl: mockFetch, timeoutMs: 5000 }
-  );
-  assert.equal(result.ok, false);
-  assert.equal(result.error, 'model_failed');
-  assert.equal(result.draft, undefined);
-});
-
-test('n8n mock: timeout returns ok:false with error=timeout', async () => {
-  const mockFetch = async (_url, opts) => {
-    await new Promise((_, reject) => {
-      opts.signal.addEventListener('abort', () => {
-        const err = new Error('aborted');
-        err.name = 'AbortError';
-        reject(err);
-      });
-    });
-  };
-
-  const result = await callN8nCompose(
-    { leadId: 'ld1', articleText: 'article' },
-    { fetchImpl: mockFetch, timeoutMs: 50 }
-  );
-  assert.equal(result.ok, false);
-  assert.equal(result.error, 'timeout');
-});
 
 test('checkout route: attaches lead_id and funnel=v2 to metadata', () => {
   const checkoutSrc = rfs(jn(HERE, '../app/api/checkout/route.js'), 'utf8');
@@ -1407,10 +1282,1035 @@ test('ownership: brief and approve routes require session auth', () => {
 test('no article → compose fails with honest error, brief preserved', () => {
   const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
   assert.ok(completeSrc.includes('insufficient_article'), 'returns insufficient_article error');
-  assert.ok(completeSrc.includes('markComposeFinished'), 'unlocks compose on article missing');
+  assert.ok(completeSrc.includes('releaseComposeLock'), 'unlocks compose on article missing');
   assert.ok(!completeSrc.includes('DEMO_DRAFT'), 'no DEMO_DRAFT fallback');
 });
 
+
+// ---------------------------------------------------------------------------
+// Group A: brief wiring (article sources, logo upload, compose-run linkage)
+// ---------------------------------------------------------------------------
+import { articlePatchFromSources as srcPatch } from '../lib/brief-shape.js';
+import { readFileSync as rfsA } from 'node:fs';
+import { fileURLToPath as fUrlA } from 'node:url';
+import { dirname as dnA, join as jnA } from 'node:path';
+
+const ROOT_A = jnA(dnA(fUrlA(import.meta.url)), '..');
+const readA = (p) => rfsA(jnA(ROOT_A, p), 'utf8');
+
+test('sourcesToBriefPatch: pasted text becomes articleText with source=paste', () => {
+  const patch = srcPatch([{ type: 'text', value: 'Acme opened a second depot.' }]);
+  assert.equal(patch.articleText, 'Acme opened a second depot.');
+  assert.equal(patch.articleSource, 'paste');
+  assert.equal(patch.articleUrl, '');
+});
+
+test('sourcesToBriefPatch: url source round-trips through articleUrl', () => {
+  const patch = srcPatch([{ type: 'url', value: '  https://example.com/news  ' }]);
+  assert.equal(patch.articleUrl, 'https://example.com/news');
+  assert.equal(patch.articleText, '');
+});
+
+test('sourcesToBriefPatch: a PDF filename is never written into articleText', () => {
+  const patch = srcPatch([{ type: 'file', value: 'press-notes.pdf', meta: '84 KB · PDF' }]);
+  assert.equal(patch.articleText, '', 'filename must not masquerade as article text');
+  assert.equal(patch.articleSource, 'pdf');
+});
+
+test('sourcesToBriefPatch: removing every source clears the stored article', () => {
+  const patch = srcPatch([]);
+  assert.equal(patch.articleText, '');
+  assert.equal(patch.articleUrl, '');
+  assert.equal(patch.articleSource, '');
+  // articleText/articleUrl are present-but-empty so sanitizeLeadFields clears them
+  assert.ok('articleText' in patch && 'articleUrl' in patch);
+});
+
+test('articlePatchFromSources: pasted text wins over a co-present PDF', () => {
+  // The surviving implementation labels the source 'pdf' whenever a PDF is
+  // attached, even if the words came from the paste box. The label is
+  // informational; the text is what compose uses.
+  const both = srcPatch([{ type: 'file', value: 'a.pdf' }, { type: 'text', value: 'real text' }]);
+  assert.equal(both.articleText, 'real text');
+  assert.equal(both.articleSource, 'pdf');
+  assert.deepEqual(srcPatch(null), { articleUrl: '', articleText: '', articleSource: '' });
+  assert.deepEqual(srcPatch([null, undefined]), { articleUrl: '', articleText: '', articleSource: '' });
+});
+
+test('BriefForm: article sources are persisted, not just held in React state', () => {
+  const src = readA('components/funnel/BriefForm.jsx');
+  assert.match(src, /articlePatchFromSources/, 'sources must map back to brief fields');
+  const calls = (src.match(/persist\(articlePatchFromSources\(next\)\)/g) || []).length;
+  assert.ok(calls >= 2, 'both onAdd and onRemove must persist the source list');
+});
+
+test('BriefForm: compose waits for the in-flight save before composing', () => {
+  const src = readA('components/funnel/BriefForm.jsx');
+  // ComposeWait POSTs /api/brief/complete with no body, so anything still in
+  // flight has to land server-side first or it composes from stale state.
+  assert.match(src, /inflight\.current = request/, 'saves must be trackable');
+  assert.match(src, /if \(inflight\.current\) await inflight\.current/, 'compose must await them');
+  // flushSave() is the named helper doing it: cancel debounce, await in-flight,
+  // then persist fields + article together.
+  assert.match(src, /async function flushSave\(\)/);
+  const flush = src.slice(src.indexOf('async function flushSave()'), src.indexOf('function addSource'));
+  assert.match(flush, /clearTimeout\(debounce\.current\)/, 'must cancel the pending debounce');
+  assert.match(flush, /articlePatchFromSources\(sources\)/, 'sources go with the final save');
+  const complete = src.slice(src.indexOf('async function complete('), src.indexOf('if (composing)'));
+  assert.match(complete, /const saved = await flushSave\(\)/, 'compose must await the flush');
+  assert.match(complete, /if \(!saved\) return/, 'must not compose from stale server state');
+});
+
+test('logo upload: the file reaches /api/logo, not just component state', () => {
+  // The upload lives inside LogoUpload rather than the parent form.
+  const picker = readA('components/funnel/LogoUpload.jsx');
+  assert.match(picker, /fetch\('\/api\/logo', \{ method: 'POST', body: form \}\)/);
+  assert.match(picker, /form\.append\('logo', processed\)/);
+  assert.match(picker, /setPicked\(null\)/, 'a failed upload must retract the success chip');
+  assert.doesNotMatch(
+    readA('components/funnel/BriefForm.jsx'),
+    /<LogoUpload onChange=\{setLogo\} \/>/,
+    'the logo must not dead-end in parent state'
+  );
+});
+
+test('LogoUpload: SVG is rejected client-side to match server validation', () => {
+  const src = readA('components/funnel/LogoUpload.jsx');
+  const okTypes = src.slice(src.indexOf('const OK_TYPES'), src.indexOf('\n', src.indexOf('const OK_TYPES')));
+  assert.doesNotMatch(okTypes, /svg/i, 'SVG is stored public and would be renderable');
+  assert.match(src, /image\/png/);
+  const copy = readA('lib/funnel.js');
+  assert.doesNotMatch(copy.slice(copy.indexOf('wrongType'), copy.indexOf('wrongType') + 120), /SVG/);
+});
+
+test('brief/complete: the compose run id is written onto the lead for checkout', () => {
+  const route = readA('app/api/brief/complete/route.js');
+  assert.match(route, /setCurrentComposeRun\(lead\.id, composeRun\.id\)/);
+  const leads = readA('lib/leads.js');
+  assert.match(leads, /export async function setCurrentComposeRun/);
+  assert.match(leads, /current_compose_run_id = \$\{composeRunId\}/);
+  // checkout reads exactly what brief/complete now writes
+  assert.match(readA('app/api/checkout/route.js'), /current_compose_run_id/);
+});
+
+// ---------------------------------------------------------------------------
+// PDF article intake: dependency-free extraction (lib/pdf-text.js)
+// ---------------------------------------------------------------------------
+import { deflateSync } from 'node:zlib';
+import { extractPdfText, isPdf } from '../lib/pdf-text.js';
+
+/** Build a real PDF whose single content stream holds `content`. */
+function makePdf(content, { compress = true } = {}) {
+  const body = compress ? deflateSync(Buffer.from(content, 'latin1')) : Buffer.from(content, 'latin1');
+  return Buffer.concat([
+    Buffer.from(
+      `%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n4 0 obj\n<< /Length ${body.length}` +
+        `${compress ? ' /Filter /FlateDecode' : ''} >>\nstream\n`,
+      'latin1'
+    ),
+    body,
+    Buffer.from('\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n', 'latin1'),
+  ]);
+}
+
+const LEDE = 'DULUTH, Minn. — Harbor Freight Logistics said Tuesday that it will open a second depot.';
+
+test('pdf: text is extracted from a Flate-compressed content stream', () => {
+  const r = extractPdfText(makePdf(`BT /F1 12 Tf 72 720 Td (${LEDE}) Tj ET`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Harbor Freight Logistics said Tuesday/);
+});
+
+test('pdf: uncompressed content streams work too', () => {
+  const r = extractPdfText(makePdf(`BT (${LEDE}) Tj ET`, { compress: false }));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /second depot/);
+});
+
+test('pdf: TJ kerning is rendered as word gaps, not run-together text', () => {
+  const words = ['Quarterly', 'revenue', 'rose', 'eighteen', 'percent', 'across', 'every', 'region', 'again'];
+  const arr = words.map((w) => `(${w}) -250 `).join('');
+  const r = extractPdfText(makePdf(`BT [${arr}] TJ ET`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Quarterly revenue rose eighteen percent/);
+});
+
+test('pdf: literal escapes and octal codes decode per spec', () => {
+  const content =
+    'BT (Escaped ' + String.raw`\(parens\)` + ' plus octal ' + String.raw`\101\102\103` +
+    ' and enough further words to clear the minimum length gate) Tj ET';
+  const r = extractPdfText(makePdf(content));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Escaped \(parens\) plus octal ABC/);
+});
+
+test('pdf: hex strings decode', () => {
+  // "The board approved the new distribution facility this week in Duluth."
+  const hex = Buffer.from(
+    'The board approved the new distribution facility this week in Duluth.',
+    'latin1'
+  ).toString('hex');
+  const r = extractPdfText(makePdf(`BT <${hex}> Tj ET`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /The board approved the new distribution facility/);
+});
+
+test('pdf: Td positioning produces line breaks between paragraphs', () => {
+  const r = extractPdfText(
+    makePdf(
+      'BT (Harbor Freight Incorporated of Duluth Minnesota) Tj ' +
+        '0 -14 Td (announced record quarterly earnings on Tuesday morning.) Tj ET'
+    )
+  );
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /Harbor Freight[\s\S]*\n[\s\S]*announced record quarterly/);
+});
+
+test('pdf: a scanned page reports no_text_layer rather than inventing text', () => {
+  // An image XObject draw with no text operators — what a scan actually is.
+  const r = extractPdfText(makePdf('q 612 0 0 792 0 0 cm /Im0 Do Q', { compress: false }));
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'no_text_layer');
+});
+
+test('pdf: CID glyph ids are detected as unreadable, never returned as mojibake', () => {
+  const glyphs = Array.from({ length: 60 }, (_, i) => (i + 1).toString(16).padStart(4, '0')).join('');
+  const r = extractPdfText(makePdf(`BT <${glyphs}> Tj ET`));
+  assert.equal(r.ok, false, 'glyph ids must not be passed off as article text');
+  assert.equal(r.reason, 'no_text_layer');
+});
+
+test('pdf: non-PDF input is rejected on its bytes, not its filename', () => {
+  assert.equal(extractPdfText(Buffer.from('plain text pretending to be a pdf')).reason, 'not_pdf');
+  assert.equal(isPdf(Buffer.from('hello')), false);
+  assert.equal(isPdf(Buffer.from('%PDF-1.7\nrest')), true);
+});
+
+test('pdf: extraction is capped so a huge PDF cannot blow the 50k storage clip', () => {
+  const para = `BT (${LEDE} ${'Filler sentence for length. '.repeat(40)}) Tj ET `;
+  const r = extractPdfText(makePdf(para.repeat(60)));
+  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 200));
+  assert.ok(r.text.length <= 60_000, `expected cap, got ${r.text.length}`);
+});
+
+test('sourcesToBriefPatch: an extracted PDF carries its text through as source=pdf', () => {
+  const patch = srcPatch([{ type: 'file', value: 'release.pdf', text: LEDE }]);
+  assert.equal(patch.articleText, LEDE);
+  assert.equal(patch.articleSource, 'pdf');
+  assert.notEqual(patch.articleText, 'release.pdf');
+});
+
+test('article/upload: extraction endpoint is authenticated and writes nothing itself', () => {
+  const route = readA('app/api/article/upload/route.js');
+  assert.match(route, /getSession\(\)/);
+  assert.match(route, /if \(!session\?\.email\)/, 'must require a session');
+  assert.match(route, /isPdf\(buffer\)/, 'must verify magic bytes, not the declared type');
+  assert.match(route, /extractPdfText\(buffer\)/);
+  // one write path: the route returns text, the form saves it via PATCH /api/brief
+  assert.doesNotMatch(route, /upsertLead|saveLeadFromPayload/);
+});
+
+test('ArticleDrop: a PDF is uploaded for extraction and the text rides on the source', () => {
+  const src = readA('components/funnel/ArticleDrop.jsx');
+  assert.match(src, /fetch\('\/api\/article\/upload', \{ method: 'POST', body \}\)/);
+  assert.match(src, /text: data\.text/, 'the extracted text must reach the source');
+  // the dead hidden mirror fields that made the loss look wired up are gone
+  assert.doesNotMatch(src, /name="articleText"/);
+  assert.doesNotMatch(src, /name="articleSource"/);
+});
+
+// ---------------------------------------------------------------------------
+// Security hardening. Findings 4 (SSRF), 5 (brief overwrite), 12 (SVG logos).
+// ---------------------------------------------------------------------------
+
+test('SSRF: IPv6 loopback reaches us in every embedding format', () => {
+  // WHATWG URL re-serialises [::ffff:127.0.0.1] to the hex form [::ffff:7f00:1],
+  // so the dotted spelling is what an attacker types and the hex spelling is
+  // what the SSRF guard actually sees. Both must land on 127.0.0.1.
+  const blocked = [
+    '::ffff:7f00:1',        // IPv4-mapped, hex — the reported bypass
+    '::ffff:127.0.0.1',     // IPv4-mapped, dotted
+    '::ffff:0:7f00:1',      // IPv4-translated ::ffff:0:0:0/96
+    '::ffff:0:127.0.0.1',
+    '::7f00:1',             // deprecated IPv4-compatible ::/96
+    '::127.0.0.1',
+    '::ffff:a00:1',         // 10.0.0.1
+    '::ffff:c0a8:1',        // 192.168.0.1
+    '::ffff:a9fe:a9fe',     // 169.254.169.254 cloud metadata
+    '64:ff9b::7f00:1',      // NAT64 well-known prefix
+    '64:ff9b::169.254.169.254',
+    '64:ff9b:1::1',         // NAT64 local-use prefix
+    '2002:7f00:1::',        // 6to4 wrapping loopback
+  ];
+  for (const ip of blocked) {
+    assert.equal(isPrivateIPv6(ip), true, `${ip} must be private`);
+    assert.equal(isPrivateIp(ip), true, `isPrivateIp(${ip}) must be private`);
+  }
+});
+
+test('SSRF: link-local covers the whole fe80::/10, not just fe80/feb0/febf', () => {
+  // fe80::/10 spans fe80–febf. The old prefix-string check missed everything
+  // in between, so fe81:: through febe:: were treated as public.
+  const blocked = ['fe80::1', 'fe81::1', 'fe8f::1', 'fe90::1', 'fe9a::1', 'fea0::1',
+    'feaf::1', 'feb1::1', 'feb5::1', 'febe::1', 'febf::1'];
+  for (const ip of blocked) {
+    assert.equal(isPrivateIPv6(ip), true, `${ip} is inside fe80::/10`);
+  }
+  // fe7f:: sits just below the range; fec0::/10 is deprecated site-local.
+  assert.equal(isPrivateIPv6('fe7f::1'), false, 'fe7f:: is outside fe80::/10');
+  assert.equal(isPrivateIPv6('fec0::1'), true, 'fec0::/10 site-local is private');
+});
+
+test('SSRF: reserved IPv6 ranges stay blocked and junk fails closed', () => {
+  for (const ip of ['::', '::1', '0:0:0:0:0:0:0:1', 'fc00::1', 'fd12:3456::1',
+    'ff02::1', 'ff00::', 'fe80::1%eth0']) {
+    assert.equal(isPrivateIPv6(ip), true, `${ip} must be private`);
+  }
+  // Unparseable input is treated as private rather than waved through.
+  for (const junk of ['', 'not-an-ip', ':::1', '1:2:3:4:5:6:7:8:9', 'gggg::1', '12345::1']) {
+    assert.equal(isPrivateIPv6(junk), true, `${JSON.stringify(junk)} fails closed`);
+  }
+});
+
+test('SSRF: real public IPv6 addresses are not over-blocked', () => {
+  const allowed = [
+    '2606:4700::1111',            // Cloudflare
+    '2001:4860:4860::8888',       // Google
+    '2a00:1450:4001:81b::200e',   // Google EU
+    '2620:fe::fe',                // Quad9
+    '1:2:3:4:5:6:7:8',
+    '::ffff:8.8.8.8',             // IPv4-mapped, but a public IPv4
+    '::ffff:808:808',
+    '::ffff:0:8.8.8.8',
+    '64:ff9b::8.8.8.8',           // NAT64 wrapping a public IPv4
+    '2002:808:808::',             // 6to4 wrapping a public IPv4
+  ];
+  for (const ip of allowed) {
+    assert.equal(isPrivateIPv6(ip), false, `${ip} must stay public`);
+  }
+  // The IPv4 classifier is untouched.
+  assert.equal(isPrivateIPv4('127.0.0.1'), true);
+  assert.equal(isPrivateIPv4('8.8.8.8'), false);
+});
+
+test('SSRF: parsePublicHttpUrl rejects the bracketed IPv6 loopback attack', () => {
+  // POST /api/articles/resolve {"url":"http://[::ffff:7f00:1]:8080/"} used to
+  // sail through and get fetched against loopback.
+  for (const url of ['http://[::ffff:7f00:1]:8080/', 'http://[::ffff:127.0.0.1]/',
+    'http://[::7f00:1]/', 'http://[::ffff:0:7f00:1]/', 'http://[64:ff9b::7f00:1]/',
+    'http://[fe9a::1]/', 'http://[::ffff:a9fe:a9fe]/latest/meta-data/']) {
+    assert.equal(parsePublicHttpUrl(url).error, 'blocked', `${url} must be blocked`);
+  }
+  // Legitimate targets still resolve.
+  assert.equal(parsePublicHttpUrl('https://[2606:4700::1111]/x').error, undefined);
+  assert.equal(
+    parsePublicHttpUrl('https://news.example/article').url.href,
+    'https://news.example/article'
+  );
+});
+
+test('ownership: auth/start will not overwrite a verified lead pre-auth', () => {
+  const startSrc = rfs(jn(HERE, '../app/api/auth/start/route.js'), 'utf8');
+  // The route must look the lead up and consult the session before writing.
+  assert.ok(startSrc.includes('getLeadByEmail'), 'looks the existing lead up');
+  assert.ok(startSrc.includes('getSession'), 'consults the session cookie');
+  assert.ok(startSrc.includes('verified_at'), 'gates on whether the lead is claimed');
+  assert.ok(
+    startSrc.includes('upsertLead(email, mayWrite ? leadFields : {})'),
+    'caller-supplied fields are dropped unless the caller owns the address'
+  );
+  // The gate has to run before the write, not after it.
+  assert.ok(
+    startSrc.indexOf('const mayWrite') < startSrc.indexOf('await upsertLead'),
+    'ownership check precedes the upsert'
+  );
+  assert.ok(
+    !startSrc.includes('await upsertLead(email, leadFields)'),
+    'no ungated upsert of caller-supplied fields survives'
+  );
+  // Legitimate flows around the gate are untouched.
+  assert.ok(startSrc.includes('body?.resend === false'), 'VerifyForm saveProfile path kept');
+  assert.ok(startSrc.includes('hasLiveUnusedLink'), 'live-code check kept');
+  assert.ok(startSrc.includes('issueMagicLink'), 'a login code is still issued');
+});
+
+test('ownership: post-verification routes still persist the brief', () => {
+  // The pre-auth write is gated, so the authenticated paths must remain the
+  // ones that actually save prefill — otherwise the funnel silently loses data.
+  const verifySrc = rfs(jn(HERE, '../app/api/auth/verify/route.js'), 'utf8');
+  const callbackSrc = rfs(jn(HERE, '../app/api/auth/callback/route.js'), 'utf8');
+  assert.ok(verifySrc.includes('await upsertLead('), 'verify persists prefill');
+  assert.ok(
+    verifySrc.indexOf('await consumeMagicCode(') < verifySrc.indexOf('await upsertLead('),
+    'verify writes only after consuming the code'
+  );
+  assert.ok(callbackSrc.includes('await upsertLead('), 'callback persists prefill');
+  assert.ok(
+    callbackSrc.indexOf('await consumeMagicLink(') < callbackSrc.indexOf('await upsertLead('),
+    'callback writes only after consuming the link'
+  );
+});
+
+// Smallest buffers that carry each format's magic bytes.
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+const WEBP_MAGIC = Buffer.concat([
+  Buffer.from('RIFF'),
+  Buffer.from([0x1a, 0x00, 0x00, 0x00]),
+  Buffer.from('WEBPVP8 '),
+]);
+const SVG_PAYLOAD = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+);
+
+test('logo upload: SVG is rejected outright', () => {
+  const res = validateLogoBuffer(SVG_PAYLOAD, 'image/svg+xml', SVG_PAYLOAD.length);
+  assert.equal(res.ok, false, 'SVG must not be storable');
+  assert.ok(!/svg/i.test(res.error), `error copy must not still offer SVG: ${res.error}`);
+  // Renaming the MIME does not help — the bytes carry no raster signature.
+  assert.equal(validateLogoBuffer(SVG_PAYLOAD, 'image/png', SVG_PAYLOAD.length).ok, false);
+  assert.equal(validateLogoBuffer(SVG_PAYLOAD, 'image/webp', SVG_PAYLOAD.length).ok, false);
+});
+
+test('logo upload: raster formats still validate', () => {
+  assert.deepEqual(validateLogoBuffer(PNG_MAGIC, 'image/png', PNG_MAGIC.length), { ok: true });
+  assert.deepEqual(validateLogoBuffer(JPEG_MAGIC, 'image/jpeg', JPEG_MAGIC.length), { ok: true });
+  assert.deepEqual(validateLogoBuffer(WEBP_MAGIC, 'image/webp', WEBP_MAGIC.length), { ok: true });
+});
+
+test('logo upload: declared MIME must match the actual bytes', () => {
+  const mismatch = validateLogoBuffer(JPEG_MAGIC, 'image/png', JPEG_MAGIC.length);
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.error, /does not match/);
+  assert.equal(validateLogoBuffer(PNG_MAGIC, 'image/webp', PNG_MAGIC.length).ok, false);
+  // A buffer too short to hold the signature cannot satisfy it.
+  assert.equal(validateLogoBuffer(Buffer.from([0x89]), 'image/png', 1).ok, false);
+  // Types outside the allowlist never reach the signature check.
+  for (const mime of ['image/gif', 'text/html', 'application/pdf', '', undefined]) {
+    assert.equal(
+      validateLogoBuffer(PNG_MAGIC, mime, PNG_MAGIC.length).ok,
+      false,
+      `${mime} rejected`
+    );
+  }
+  // Size cap unchanged.
+  assert.equal(validateLogoBuffer(PNG_MAGIC, 'image/png', 9 * 1024 * 1024).ok, false);
+});
+
+test('logo upload: SVG can never be stored, in any layer', () => {
+  const storeSrc = readA('lib/logo-storage.js');
+  // Detecting SVG is fine and useful -- inferImageMime names it so that
+  // validateLogoBuffer can bounce it. What matters is that it is not allowed.
+  const allowed = storeSrc.slice(storeSrc.indexOf('const ALLOWED_MIME'), storeSrc.indexOf('const SIGNATURES'));
+  assert.doesNotMatch(allowed, /svg/i, 'svg must not be an allowed mime');
+  assert.doesNotMatch(storeSrc, /return true; \/\/ unknown mime/,
+    'an unrecognised mime no longer skips the signature check');
+  // And the pickers must not offer a format the server will bounce.
+  assert.doesNotMatch(readA('components/funnel/LogoUpload.jsx'), /image\/svg/);
+  assert.doesNotMatch(readA('components/OnboardingForm.jsx'), /image\/svg/);
+});
+
+// ---------------------------------------------------------------------------
+// Finding 7: a failed compose retry must not destroy the existing draft
+// ---------------------------------------------------------------------------
+const T1 = '2026-09-01T10:00:00.000Z'; // a good n8n draft landed
+const T2 = '2026-09-01T10:05:00.000Z'; // customer edited the brief
+const T3 = '2026-09-01T10:06:00.000Z'; // the retry failed
+const N8N_DRAFT = JSON.stringify({ ok: true, source: 'n8n', headline: 'Harbor Freight expands' });
+
+/** Lead state after: success at T1 -> brief edit at T2 -> retry fails at T3. */
+const afterFailedRetry = {
+  id: 'lead-1',
+  compose_json: N8N_DRAFT,
+  compose_finished_at: T1,
+  updated_at: T2,
+  compose_started_at: null, // releaseComposeLock cleared it
+};
+
+test('finding 7: a failed retry leaves the customer\'s draft intact', () => {
+  assert.equal(hasComposeDraft(afterFailedRetry), true, 'the paid-for draft must survive');
+  assert.equal(hasSavedCompose(afterFailedRetry), true, '/preview must still render it');
+});
+
+test('finding 7: the lock is released so the customer can retry', () => {
+  assert.equal(isComposeInFlight(afterFailedRetry, Date.parse(T3)), false);
+  assert.equal(composeLockAllowsNewRun(afterFailedRetry, Date.parse(T3)), true);
+});
+
+test('finding 7: the surviving draft is not served as if it were current', () => {
+  // The brief moved on at T2, after the last real draft at T1 — so a fresh
+  // compose is still owed, even though the old draft is readable.
+  assert.equal(briefNewerThanCompose(afterFailedRetry), true);
+  assert.equal(canReuseN8nCompose(afterFailedRetry), false);
+});
+
+test('finding 7: stamping compose_finished_at on failure would freeze the stale draft', () => {
+  // This is the state the old markComposeFinished produced (both fields = now).
+  // It reads as "the draft is current" and permanently suppresses the retry —
+  // which is why releaseComposeLock must touch neither field.
+  const frozen = { ...afterFailedRetry, compose_finished_at: T3, updated_at: T3 };
+  assert.equal(briefNewerThanCompose(frozen), false);
+  assert.equal(canReuseN8nCompose(frozen), true, 'documents the bug we must not create');
+  assert.equal(composeLockAllowsNewRun(frozen, Date.parse(T3)), false, 'retry suppressed');
+});
+
+test('finding 7: a first-ever compose that fails can still be retried', () => {
+  const neverSucceeded = {
+    id: 'lead-2',
+    compose_json: null,
+    compose_finished_at: null,
+    updated_at: T2,
+    compose_started_at: null,
+  };
+  assert.equal(hasComposeDraft(neverSucceeded), false);
+  assert.equal(canReuseN8nCompose(neverSucceeded), false);
+  assert.equal(composeLockAllowsNewRun(neverSucceeded, Date.parse(T3)), true);
+});
+
+test('finding 7: claimComposeLock no longer wipes compose_json', () => {
+  const src = readA('lib/leads.js');
+  const body = src.slice(
+    src.indexOf('export async function claimComposeLock'),
+    src.indexOf('export async function saveComposeSuccess')
+  );
+  assert.doesNotMatch(body, /compose_json\s*=\s*NULL/, 'the draft must survive the claim');
+  assert.match(body, /compose_finished_at = NULL/, 'finished_at is still the in-flight marker');
+  // a run that produced nothing must remain claimable
+  assert.match(body, /OR compose_finished_at IS NULL/);
+});
+
+test('finding 7: releaseComposeLock only clears the lock', () => {
+  const src = readA('lib/leads.js');
+  const body = src.slice(
+    src.indexOf('export async function releaseComposeLock'),
+    src.indexOf('export async function upsertLead')
+  );
+  assert.match(body, /SET compose_started_at = NULL/);
+  assert.doesNotMatch(body, /compose_finished_at\s*=/, 'no draft was produced');
+  assert.doesNotMatch(body, /updated_at\s*=/, 'must not erase the brief-edit signal');
+  // and the misleading old name is gone everywhere
+  assert.doesNotMatch(readA('app/api/brief/complete/route.js'), /markComposeFinished/);
+});
+
+// ---------------------------------------------------------------------------
+// In-house two-stage composer (replaces the n8n webhook)
+// ---------------------------------------------------------------------------
+import { composeRelease } from '../lib/compose-engine.js';
+import {
+  DRAFT_INSTRUCTIONS,
+  DRAFT_SCHEMA,
+  FACTS_INSTRUCTIONS,
+  FACTS_SCHEMA,
+  buildDraftInput,
+  buildFactsInput,
+} from '../lib/compose-prompt.js';
+
+const CLIP =
+  'Harbor Freight Logistics will open a second depot on the western edge of Duluth, ' +
+  'Minnesota, adding about forty jobs over eighteen months, the company said Tuesday.';
+
+const PAYLOAD = {
+  companyName: 'Harbor Freight Logistics',
+  website: 'harborfreightlog.com',
+  contactName: 'Dana Reyes',
+  contactEmail: 'dana@harborfreightlog.com',
+  phone: '218-555-0134',
+  announcementType: 'New location',
+  articleText: CLIP,
+  articleSource: 'paste',
+  quote: 'Duluth has been good to us.',
+  quoteAttribution: 'Dana Reyes, President',
+  notes: 'Family owned since 1994. Please mention the hiring.',
+  leadId: 'lead-9',
+  orderId: 'order-9',
+  composeRunId: 'run-9',
+};
+
+const GOOD_FACTS = {
+  ok: true,
+  who: 'Harbor Freight Logistics',
+  what: 'opening a second depot',
+  where: 'Duluth, Minnesota',
+  when: 'Tuesday',
+  why: 'capacity growth',
+  keyFacts: ['about forty jobs', 'eighteen month timeline'],
+  discarded: '',
+  error: null,
+};
+
+const GOOD_DRAFT = {
+  ok: true,
+  headline: 'Harbor Freight Logistics opens second Duluth depot',
+  subhead: 'About forty jobs expected over eighteen months',
+  dateline: 'DULUTH, MN, September 3, 2026',
+  body: ['Para one.', 'Para two.', 'Para three.'],
+  quote: 'Duluth has been good to us.',
+  quoteAttribution: 'Dana Reyes, President',
+  boilerplate: 'Harbor Freight Logistics is a family-owned carrier.',
+  contactLine: 'Dana Reyes / dana@harborfreightlog.com',
+  error: null,
+};
+
+/** Records every call so the tests can inspect what each stage was handed. */
+function recorder(responses) {
+  const calls = [];
+  const callModel = async (args) => {
+    calls.push(args);
+    const next = responses[calls.length - 1];
+    return typeof next === 'function' ? next(args) : next;
+  };
+  return { calls, callModel };
+}
+
+test('composer: two stages produce a draft', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.draft.headline, GOOD_DRAFT.headline);
+  assert.equal(calls.length, 2, 'facts then draft');
+  assert.equal(calls[0].schema, FACTS_SCHEMA);
+  assert.equal(calls[1].schema, DRAFT_SCHEMA);
+});
+
+test('composer: the article clip is never handed to the writer', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  await composeRelease(PAYLOAD, { callModel });
+
+  // Stage 1 must see the clip; stage 2 must not. This is the anti-plagiarism
+  // and anti-hallucination invariant the whole two-stage design exists for.
+  assert.equal(calls[0].input.articleText, CLIP);
+  assert.equal(calls[1].input.articleText, '', 'blanked, not merely omitted');
+  assert.ok('articleText' in calls[1].input, 'present-but-empty defeats prompt habit');
+  assert.doesNotMatch(JSON.stringify(calls[1].input), /western edge/, 'no clip prose survives');
+});
+
+test('composer: the customer announcementType and notes reach the writer', async () => {
+  // The n8n workflow logged announcementType and passed neither field to the
+  // writer, so a REQUIRED brief field never influenced the release.
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  await composeRelease(PAYLOAD, { callModel });
+  assert.equal(calls[1].input.announcementType, 'New location');
+  assert.equal(calls[1].input.notes, 'Family owned since 1994. Please mention the hiring.');
+  assert.match(DRAFT_INSTRUCTIONS, /announcementType/);
+  assert.match(DRAFT_INSTRUCTIONS, /notes are the customer/);
+});
+
+test('composer: extracted facts are carried into stage two', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: GOOD_DRAFT },
+  ]);
+  await composeRelease(PAYLOAD, { callModel });
+  assert.deepEqual(calls[1].input.facts.keyFacts, ['about forty jobs', 'eighteen month timeline']);
+  assert.equal(calls[1].input.facts.where, 'Duluth, Minnesota');
+});
+
+test('composer: a clip with no real event fails honestly and skips the writer', async () => {
+  const { calls, callModel } = recorder([
+    { ok: true, data: { ...GOOD_FACTS, ok: false, error: 'no identifiable event' } },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'no identifiable event');
+  assert.equal(result.stage, 'facts');
+  assert.equal(calls.length, 1, 'must not pay for a draft it cannot write');
+});
+
+test('composer: transient failures stay retryable, content failures do not', async () => {
+  const cases = [['timeout', 502], ['network', 502], ['compose_failed', 200]];
+  for (const [error, status] of cases) {
+    const { callModel } = recorder([{ ok: false, error }]);
+    const result = await composeRelease(PAYLOAD, { callModel });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, error);
+    assert.equal(result.status, status, error + ' should map to ' + status);
+    assert.equal(statusForComposeError(error), status, 'route agrees with engine');
+  }
+});
+
+test('composer: a stage-two failure is reported as such', async () => {
+  const { callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: false, error: 'refused' },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'draft');
+  assert.equal(result.error, 'refused');
+});
+
+test('composer: a writer that returns ok:false never yields a draft', async () => {
+  const { callModel } = recorder([
+    { ok: true, data: GOOD_FACTS },
+    { ok: true, data: { ...GOOD_DRAFT, ok: false, error: 'insufficient facts' } },
+  ]);
+  const result = await composeRelease(PAYLOAD, { callModel });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'insufficient facts');
+  assert.equal(result.draft, undefined);
+});
+
+test('composer: without a model caller it fails closed', async () => {
+  const result = await composeRelease(PAYLOAD, {});
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'unavailable');
+});
+
+test('composer: internal identifiers are kept out of the model context', async () => {
+  const facts = buildFactsInput(PAYLOAD);
+  assert.equal('leadId' in facts, false);
+  assert.equal('composeRunId' in facts, false);
+  assert.equal(facts.companyName, 'Harbor Freight Logistics');
+});
+
+test('composer: both schemas are strict and fully required', () => {
+  for (const schema of [FACTS_SCHEMA, DRAFT_SCHEMA]) {
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(
+      schema.required.slice().sort(),
+      Object.keys(schema.properties).sort(),
+      'every property must be required for strict decoding'
+    );
+  }
+  // The writer output must cover everything normalizeComposeResponse reads.
+  const readKeys = ['headline', 'subhead', 'dateline', 'body', 'quote',
+    'quoteAttribution', 'boilerplate', 'contactLine'];
+  for (const key of readKeys) {
+    assert.ok(DRAFT_SCHEMA.properties[key], 'draft schema is missing ' + key);
+  }
+});
+
+test('composer: the extractor is told not to write the release', () => {
+  assert.match(FACTS_INSTRUCTIONS, /Do not write a press release/);
+  assert.match(DRAFT_INSTRUCTIONS, /Never invent dates, addresses, awards, stats, motives, or quotes/);
+  assert.match(DRAFT_INSTRUCTIONS, /articleText is intentionally absent/);
+});
+
+test('composer: buildDraftInput is pure and tolerates missing fields', () => {
+  const empty = buildDraftInput({}, {});
+  assert.equal(empty.articleText, '');
+  assert.deepEqual(empty.facts.keyFacts, []);
+  assert.equal(empty.companyName, '');
+  const before = JSON.stringify(PAYLOAD);
+  buildDraftInput(PAYLOAD, GOOD_FACTS);
+  assert.equal(JSON.stringify(PAYLOAD), before, 'must not mutate the payload');
+});
+
+test('composer: the SDK is imported in exactly one module', () => {
+  assert.match(readA('lib/anthropic.js'), /@anthropic-ai\/sdk/);
+  assert.doesNotMatch(readA('lib/compose-engine.js'), /@anthropic-ai\/sdk/, 'engine stays testable');
+  assert.doesNotMatch(readA('lib/compose-prompt.js'), /@anthropic-ai\/sdk/);
+  const client = readA('lib/anthropic.js');
+  assert.match(client, /claude-opus-5/);
+  assert.match(client, /output_config/);
+  assert.match(client, /json_schema/);
+  assert.match(client, /refusal/, 'a policy decline must not read as a draft');
+});
+
+// ---------------------------------------------------------------------------
+// Track A: owner alerts survive customer data, and customers actually hear back
+// ---------------------------------------------------------------------------
+import {
+  TRANSIENT_COMPOSE_ERRORS,
+  escapeTelegramMarkdown as tgEsc,
+} from '../lib/notify.js';
+
+test('telegram: customer values that would break Markdown are escaped', () => {
+  // An unescaped underscore opens an italic run that never closes; Telegram
+  // answers 400 and the owner never learns the draft is ready.
+  assert.equal(tgEsc('sal_marino@x.com'), 'sal\\_marino@x.com');
+  assert.equal(tgEsc("*Sal's Pizza*"), "\\*Sal's Pizza\\*");
+  assert.equal(tgEsc('Acme [MD] (East)'), 'Acme \\[MD\\] \\(East\\)');
+  assert.equal(tgEsc('back`tick'), 'back\\`tick');
+});
+
+test('telegram: escaping leaves ordinary text and empties alone', () => {
+  assert.equal(tgEsc('Harbor Freight Logistics'), 'Harbor Freight Logistics');
+  assert.equal(tgEsc(''), '');
+  assert.equal(tgEsc(null), '');
+  assert.equal(tgEsc(undefined), '');
+  assert.equal(tgEsc(42), '42');
+});
+
+test('telegram: every interpolated value in an alert goes through the escaper', () => {
+  const src = readA('lib/notify.js');
+  // Only the Telegram `text` bodies are Markdown-parsed. The `subject` and
+  // `plain` email strings beside them are plain text and must NOT be escaped.
+  const blocks = [...src.matchAll(/const text =([\s\S]*?);\n/g)].map((m) => m[1]);
+  assert.ok(blocks.length >= 5, 'expected the alert templates, found ' + blocks.length);
+  let checked = 0;
+  for (const block of blocks) {
+    for (const m of block.matchAll(/\$\{([^}]+)\}/g)) {
+      checked += 1;
+      const expr = m[1].trim();
+      assert.ok(expr.startsWith('md('), 'unescaped interpolation in a Telegram alert: ' + expr);
+    }
+  }
+  assert.ok(checked >= 10, 'expected several interpolations, checked ' + checked);
+});
+
+test('telegram: a formatting rejection falls back to unformatted delivery', () => {
+  const src = readA('lib/notify.js');
+  assert.match(src, /if \(res\.status === 400\) return sendTelegramPlain\(text\)/);
+  const plain = src.slice(src.indexOf('async function sendTelegramPlain'));
+  assert.doesNotMatch(plain.slice(0, 600), /parse_mode/, 'the retry must not re-parse');
+});
+
+test('notifications: all four customer emails are actually wired', () => {
+  const src = readA('lib/notify.js');
+  for (const fn of [
+    'sendDraftReadyEmail',
+    'sendApprovalConfirmationEmail',
+    'sendPrSentEmail',
+    'sendComposeFailedEmail',
+  ]) {
+    // imported AND called — an import alone is what the bug looked like
+    assert.match(src, new RegExp('\\b' + fn + '\\b'), `${fn} not referenced`);
+    assert.match(src, new RegExp(fn + '\\(\\{ to:'), `${fn} imported but never called`);
+  }
+});
+
+test('notifications: pr_sent reaches the customer from the admin hook', () => {
+  const route = readA('app/api/admin/pr-sent/route.js');
+  assert.match(route, /notifyPrSent\(/, 'the release-sent promise must be kept');
+  assert.match(route, /SELECT id, email, order_status/, 'needs the address to notify');
+  assert.match(route, /\.catch\(\(\) => \{\}\)/, 'notification must not fail the transition');
+  assert.match(readA('lib/notify.js'), /export async function notifyPrSent/);
+});
+
+test('notifications: a transient compose blip does not alarm the customer', () => {
+  // They are watching ComposeWait and will retry; only actionable failures mail.
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('timeout'), true);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('network'), true);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('unavailable'), true);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('insufficient_article'), false);
+  assert.equal(TRANSIENT_COMPOSE_ERRORS.has('refused'), false);
+  const src = readA('lib/notify.js');
+  assert.match(src, /actionable \? sendComposeFailedEmail/);
+});
+
+test('admin/pr-sent: the secret is compared in constant time', () => {
+  const route = readA('app/api/admin/pr-sent/route.js');
+  assert.match(route, /timingSafeEqual/);
+  assert.doesNotMatch(route, /provided !== adminSecret/, 'byte-by-byte compare leaks the secret');
+  assert.match(route, /a\.length !== b\.length/, 'timingSafeEqual throws on length mismatch');
+});
+
+// ---------------------------------------------------------------------------
+// Track B: customers read sentences, not error codes or blank space
+// ---------------------------------------------------------------------------
+import { COMPOSE as COMPOSE_COPY, STEP_ARTICLE as STEP_ART } from '../lib/funnel.js';
+
+test('funnel copy: the article-resolve failure strings StartFlow reads exist', () => {
+  // Both were referenced by StartFlow and defined nowhere, so a failed resolve
+  // called setArticleError(undefined) and rendered nothing at all.
+  for (const key of ['parseFail', 'parsePartial']) {
+    assert.equal(typeof STEP_ART[key], 'string', `STEP_ARTICLE.${key} must be a string`);
+    assert.ok(STEP_ART[key].trim().length > 10, `STEP_ARTICLE.${key} must say something`);
+  }
+  const src = readA('components/funnel/StartFlow.jsx');
+  assert.match(src, /STEP_ARTICLE\.parseFail/);
+  assert.match(src, /STEP_ARTICLE\.parsePartial/);
+});
+
+test('funnel copy: compose transport errors have human wording', () => {
+  assert.ok(COMPOSE_COPY.errors, 'COMPOSE.errors must exist');
+  for (const code of ['timeout', 'network', 'unavailable', 'refused']) {
+    const text = COMPOSE_COPY.errors[code];
+    assert.equal(typeof text, 'string', `no copy for ${code}`);
+    assert.ok(text.trim().length > 20, `copy for ${code} is too thin`);
+    assert.doesNotMatch(text, /_/, `copy for ${code} still reads like an identifier`);
+  }
+});
+
+test('ComposeWait: the written message wins over the machine code', () => {
+  const src = readA('components/funnel/ComposeWait.jsx');
+  assert.match(src, /data\.message \|\| COMPOSE\.errors\[data\.error\]/);
+  // the old behaviour surfaced data.error directly
+  assert.doesNotMatch(src, /new Error\(data\.error/);
+  assert.match(src, /err\.explained/, 'only explained failures should render a reason');
+});
+
+test('ComposeWait: an unexplained failure shows no raw code at all', () => {
+  const src = readA('components/funnel/ComposeWait.jsx');
+  assert.match(src, /setFailError\(err\?\.explained \? err\.message : ''\)/);
+});
+
+test('ArticleDrop: the resolving prop StartFlow passes is actually consumed', () => {
+  const src = readA('components/funnel/ArticleDrop.jsx');
+  assert.match(src, /resolving = false/, 'must accept the prop');
+  assert.match(src, /const busy = reading \|\| resolving/, 'must fold it into the busy state');
+  assert.match(src, /Reading that link/, 'a URL fetch needs its own wording');
+  // StartFlow still passes it
+  assert.match(readA('components/funnel/StartFlow.jsx'), /resolving=\{resolving\}/);
+});
+
+
+// ---------------------------------------------------------------------------
+// Group C: shared preview links, honest rate limiting, paid-state integrity
+// ---------------------------------------------------------------------------
+
+test('preview: the shared token is the lead id, so it can resolve a lead', () => {
+  // PreviewScreen.share() hands out /preview/<previewTokenFor(lead)>?shared=1.
+  // The whole token fallback rests on that token being the lead id verbatim.
+  const id = '3f1b6a0e-9d2c-4a51-8f0b-7c2d5e9a1b34';
+  assert.equal(previewTokenFor({ id }), id);
+  assert.equal(safePreviewToken(id), id, 'a uuid survives the path-segment guard');
+  assert.equal(safePreviewToken('../../etc/passwd'), 'demo', 'garbage never reaches the lookup');
+  assert.equal(safePreviewToken(undefined), 'demo');
+});
+
+test('preview: a recipient with no session gets the draft behind the token', () => {
+  const src = readA('lib/preview-draft.js');
+  assert.match(src, /import \{[^}]*getLeadById[^}]*\} from '\.\/leads'/, 'imported from lib/leads');
+  assert.match(src, /getLeadById\(previewToken\)/, 'the token resolves a lead');
+  // The token is resolved first, so a share link works for anyone holding it.
+  // A bare /preview carries no token, falls through to 'demo', and lands on the
+  // session lookup -- so a signed-in owner still sees their own draft.
+  assert.ok(
+    src.indexOf('getLeadById(previewToken)') < src.indexOf('getLeadByEmail(session.email)'),
+    'the token is tried before the session'
+  );
+  assert.match(src, /if \(!lead && session\?\.email\)/, 'the session is the fallback');
+});
+
+test('preview: the token lookup fails soft; demo is still the demo draft', () => {
+  const src = readA('lib/preview-draft.js');
+  // leads.id is a uuid, so a well-formed but unknown token throws in Postgres.
+  const block = src.slice(src.indexOf("if (previewToken !== 'demo')"));
+  assert.match(
+    block.slice(0, 400),
+    /try \{[\s\S]*getLeadById\(previewToken\)[\s\S]*\} catch/,
+    'an unknown token must not blow up the page'
+  );
+  assert.match(src, /if \(previewToken === 'demo'\) return DEMO_DRAFT;/);
+  assert.match(src, /return draftFromBrief\(\{\}\);/, 'a miss still ends at the empty draft');
+  assert.ok(!/getLeadById\(token\)/.test(src), 'the unsanitised token never reaches the query');
+  // exactly one lookup by token -- the merge briefly produced two
+  assert.equal((src.match(/getLeadById\(previewToken\)/g) || []).length, 1);
+});
+
+test('auth/start: an IP-limited signup is refused, not congratulated', () => {
+  const src = readA('app/api/auth/start/route.js');
+  const fromLimit = src.slice(src.indexOf('const ip = clientIp(request);'));
+  const branch = fromLimit.slice(0, fromLimit.indexOf('const last = cooldown.get(email);'));
+  assert.match(branch, /status: 429/, 'a limited request must not answer 200');
+  assert.match(branch, /error: 'rate_limited'/, 'same vocabulary as the other limited routes');
+  assert.ok(
+    !branch.includes('return ok(email)'),
+    'no ok:true/sent:true for a code that was never issued'
+  );
+  // ok() is the only place PENDING_COOKIE is set, so refusing here also keeps
+  // the caller out of /start/verify waiting on an attempt that does not exist.
+  assert.match(src, /function ok\(email, extra\)[\s\S]*?PENDING_COOKIE/);
+});
+
+test('auth/start: the two truthful ok(email) branches are untouched', () => {
+  const src = readA('app/api/auth/start/route.js');
+  assert.equal(
+    (src.match(/return ok\(email\);/g) || []).length,
+    2,
+    'saveProfile and cooldown still answer ok — only the IP branch changed'
+  );
+  const saveProfile = src.indexOf('body?.resend === false');
+  const limited = src.indexOf('ipLimit.check');
+  const cool = src.indexOf('Date.now() - last < COOLDOWN_MS');
+  assert.ok(saveProfile > -1 && limited > saveProfile && cool > limited, 'branch order preserved');
+  assert.match(
+    src.slice(saveProfile, limited),
+    /return ok\(email\);/,
+    'the profile-save path keeps the live code and still answers ok'
+  );
+  assert.match(
+    src.slice(cool),
+    /return ok\(email\);/,
+    'the cooldown path still answers ok — there a code really was just sent'
+  );
+  assert.match(src, /return ok\(email, \{ pendingToken \}\);/, 'the sent path is unchanged');
+});
+
+test('auth/start: sent:true is a claim the ninth caller behind a NAT cannot be told', () => {
+  assert.deepEqual(startOkBody('sal@example.com'), {
+    ok: true,
+    email: 'sal@example.com',
+    sent: true,
+  });
+  const limiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 8 });
+  for (let i = 0; i < 8; i += 1) {
+    assert.equal(limiter.check('start:203.0.113.7').ok, true, `request ${i + 1} is allowed`);
+  }
+  assert.equal(limiter.check('start:203.0.113.7').ok, false, 'the 9th shares the office IP');
+});
+
+test('account: ?paid=1 on its own no longer renders a paid account', () => {
+  const src = readA('app/account/page.jsx');
+  assert.match(src, /const purchased = ladder === 'purchased' \|\| stripePaid;/);
+  const decl = src.slice(src.indexOf('const purchased ='), src.indexOf('const v1NeedsBrief'));
+  assert.ok(!decl.includes('paidParam'), 'a query string is not evidence of payment');
+  // Everything the fake state unlocked hangs off `purchased`.
+  assert.match(src, /\{purchased && orderStatus \?/, 'the paid card is gated on purchased');
+});
+
+test('account: the post-checkout claim flow still relies on paid=1', () => {
+  const src = readA('app/account/page.jsx');
+  assert.match(
+    src,
+    /if \(!auth\?\.email && paidParam && sessionId\)/,
+    'the Stripe return still claims the session for a signed-out buyer'
+  );
+  assert.match(src, /stripe\.checkout\.sessions\.retrieve/, 'a retrieved session is the proof');
+  assert.match(src, /const stripePaid = stripeSession\?\.payment_status === 'paid';/);
+});
+
+test('compose-runs: getComposeRunById builds one whole query per case', () => {
+  const src = readA('lib/compose-runs.js');
+  const fn = src.slice(src.indexOf('export async function getComposeRunById'));
+  assert.match(
+    fn,
+    /WHERE id = \$\{runId\} AND lead_id = \$\{leadId\}/,
+    'the ownership case is a complete query'
+  );
+  assert.match(fn, /WHERE id = \$\{runId\}\s*\n\s*LIMIT 1/, 'so is the unscoped case');
+  assert.match(fn, /leadId\s*\n?\s*\?\s*await sql`/, 'the branch picks a query, not a fragment');
+  assert.match(fn, /catch \(err\)[\s\S]*return null;/, 'the miss path still returns null');
+});
+
+test('compose-runs: no query interpolates another sql`` fragment', () => {
+  // @neondatabase/serverless binds an interpolated tagged template as a
+  // parameter, so `${leadId ? sql`AND lead_id = ${leadId}` : sql``}` compiles
+  // to `WHERE id = $1 $2 LIMIT 1` and throws on every single call.
+  const nested = /\$\{[^}]*sql`/;
+  for (const path of ['lib/compose-runs.js', 'lib/leads.js', 'lib/db.js']) {
+    assert.ok(!nested.test(readA(path)), `${path} must not compose sql fragments`);
+  }
+  assert.ok(!readA('lib/compose-runs.js').includes('sql``'), 'no empty-fragment idiom');
+});
+
+test('StartFlow: a rate-limited signup never renders the raw error code', () => {
+  const src = readA('components/funnel/StartFlow.jsx');
+  // Scope to the auth/start submit only. The article-resolve call above it
+  // legitimately reads data.error, because /api/article/resolve returns written
+  // prose in that field while /api/auth/start returns a machine code.
+  const authIdx = src.indexOf("fetch('/api/auth/start'");
+  assert.ok(authIdx > 0, 'auth/start call not found');
+  const block = src.slice(authIdx, authIdx + 1400);
+  assert.match(block, /data\.message \|\| STEP_EMAIL\.failed/);
+  assert.doesNotMatch(block, /new Error\(data\.error/, 'machine codes must not reach the user');
+
+  const route = readA('app/api/auth/start/route.js');
+  assert.match(route, /rate_limited/);
+  assert.match(route, /Too many sign-in attempts/, 'the 429 must carry wording');
+  assert.match(route, /status: 429/);
+});
 test('BriefForm persists articleText on source change and flushes before compose', () => {
   const briefSrc = rfs(jn(HERE, '../components/funnel/BriefForm.jsx'), 'utf8');
   assert.ok(briefSrc.includes('articlePatchFromSources'), 'maps sources to article PATCH fields');

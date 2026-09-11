@@ -3,6 +3,7 @@ import {
   PENDING_COOKIE,
   createPendingToken,
   getAuthSecret,
+  getSession,
   hasLiveUnusedLink,
   isValidEmail,
   issueMagicLink,
@@ -13,7 +14,7 @@ import {
 import { V2_LINK_TTL_MS, startOkBody, startResponseAfterSend } from '../../../../lib/codes';
 import { isDatabaseConfigured } from '../../../../lib/db';
 import { buildLoginUrl, sendVerificationCodeEmail, siteOrigin } from '../../../../lib/email';
-import { upsertLead } from '../../../../lib/leads';
+import { getLeadByEmail, upsertLead } from '../../../../lib/leads';
 import { mergeStartLeadFields } from '../../../../lib/prefill';
 import { clientIp, createRateLimiter } from '../../../../lib/rate-limit';
 
@@ -56,8 +57,29 @@ export async function POST(request) {
 
   const nextPath = body?.next ? safeRelativePath(body.next, '') : '';
   const leadFields = mergeStartLeadFields(body?.prefill, body?.context);
+
+  // This endpoint is unauthenticated: anyone can POST any address. Carrying the
+  // caller's fields straight into the lead row would let a stranger overwrite a
+  // real customer's saved brief just by typing their email. So the fields are
+  // only honoured while the address is still unclaimed — a brand-new lead, or
+  // one that has never completed verification, is nothing but captured prefill.
+  // Once a lead is verified it belongs to someone, and only a session for that
+  // same address may write to it. Everyone else still gets a login code; the
+  // upsert just runs empty, which merges the row onto itself and leaves both the
+  // brief and furthest_step untouched.
+  let existing;
   try {
-    await upsertLead(email, leadFields);
+    existing = await getLeadByEmail(email);
+  } catch (err) {
+    console.error('[auth/start] lead lookup failed:', err?.message);
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  const owned = getSession()?.email === email;
+  const mayWrite = !existing?.verified_at || owned;
+
+  try {
+    await upsertLead(email, mayWrite ? leadFields : {});
   } catch (err) {
     console.error('[auth/start] lead upsert failed:', err?.message);
     return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
@@ -69,9 +91,22 @@ export async function POST(request) {
     return ok(email);
   }
 
+  // One office NAT can burn this window on eight colleagues; the ninth gets no
+  // code at all. Telling them to check their inbox strands them on /start/verify
+  // waiting for mail that was never sent, so answer 429 the way the other
+  // rate-limited routes do — no ok:true, no sent:true, no pending cookie.
+  // The cooldown branch below is different: there a code really was just sent.
   const ip = clientIp(request);
   if (!ipLimit.check(`start:${ip}`).ok) {
-    return ok(email);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: 'rate_limited',
+        message:
+          'Too many sign-in attempts from your network just now. Give it a few minutes and try again.',
+      },
+      { status: 429 }
+    );
   }
 
   const last = cooldown.get(email);

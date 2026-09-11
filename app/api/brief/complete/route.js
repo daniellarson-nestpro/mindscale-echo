@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '../../../../lib/auth';
 import {
-  COMPOSE_WAIT_MS,
   buildComposePayload,
   canReuseN8nCompose,
   normalizeComposeResponse,
@@ -16,17 +15,19 @@ import {
   getLeadByEmail,
   getLeadById,
   loadOrdersForEmail,
-  markComposeFinished,
+  releaseComposeLock,
   saveComposeSuccess,
+  setCurrentComposeRun,
   upsertLead,
 } from '../../../../lib/leads';
-import { callN8nCompose } from '../../../../lib/n8n';
+import { callStructuredModel } from '../../../../lib/anthropic';
+import { composeRelease } from '../../../../lib/compose-engine';
 import { createComposeRun, finishComposeRun } from '../../../../lib/compose-runs';
 import { notifyOwnerDraftReady, notifyOwnerComposeFailed } from '../../../../lib/notify';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 function paidOrderId(orders) {
   const paid = (orders || []).find((order) => order.payment_status === 'paid');
@@ -42,11 +43,15 @@ function failResponse(error, status) {
 }
 
 /**
- * Pre-payment compose. ok:true only after n8n returns ok:true (or a saved
- * payload with source:'n8n'). Local template copy is never a successful compose.
- * The browser only POSTs this route; it does not call n8n.
+ * Pre-payment compose. ok:true only after the composer actually produces a
+ * draft (or a saved payload with source:'n8n'). Local template copy is never a
+ * successful compose. The browser only POSTs this route.
  *
- * The exact outbound payload is snapshotted in compose_runs BEFORE the n8n call.
+ * `source:'n8n'` is a compatibility token, not a description — it is what
+ * hasN8nCompose, hasComposeDraft and claimComposeLock's SQL all test for, and
+ * renaming it means migrating all three plus a backfill.
+ *
+ * The exact outbound payload is snapshotted in compose_runs BEFORE the model call.
  */
 export async function POST() {
   const session = getSession();
@@ -103,7 +108,7 @@ export async function POST() {
   const hasArticle = Boolean(lead.article_text?.trim() || lead.article_url?.trim());
   if (!hasArticle) {
     try {
-      await markComposeFinished(lead.id);
+      await releaseComposeLock(lead.id);
     } catch {}
     return NextResponse.json(
       {
@@ -134,7 +139,7 @@ export async function POST() {
 
   if (!articleText.trim()) {
     try {
-      await markComposeFinished(lead.id);
+      await releaseComposeLock(lead.id);
     } catch {}
     return NextResponse.json(
       {
@@ -156,27 +161,31 @@ export async function POST() {
 
   const payload = buildComposePayload({ lead, articleText, orderId });
 
-  // SAVE the exact outbound payload BEFORE calling n8n
+  // SAVE the exact outbound payload BEFORE calling the composer
   let composeRun = null;
   try {
     composeRun = await createComposeRun({ leadId: lead.id, requestPayload: payload });
     if (composeRun?.id) {
       payload.composeRunId = composeRun.id;
+      // Checkout reads leads.current_compose_run_id to stamp orders.compose_run_id.
+      // Without this write that column is always NULL and the order -> compose-run
+      // audit link never exists.
+      await setCurrentComposeRun(lead.id, composeRun.id);
     }
   } catch (err) {
     console.error('[brief/complete] compose run snapshot failed:', err?.message);
   }
 
   const callStart = Date.now();
-  const result = await callN8nCompose(payload, { timeoutMs: COMPOSE_WAIT_MS });
+  const result = await composeRelease(payload, { callModel: callStructuredModel });
   const durationMs = Date.now() - callStart;
 
-  // Save n8n outcome to compose_run
+  // Save the compose outcome to compose_run
   try {
     await finishComposeRun({
       runId: composeRun?.id,
       ok: result.ok,
-      responsePayload: result.ok ? result.draft : { error: result.error },
+      responsePayload: result.ok ? result.draft : { error: result.error, stage: result.stage },
       error: result.ok ? null : result.error,
       httpStatus: result.status,
       durationMs,
@@ -187,7 +196,7 @@ export async function POST() {
 
   if (!result.ok) {
     try {
-      await markComposeFinished(lead.id);
+      await releaseComposeLock(lead.id);
     } catch (err) {
       console.error('[brief/complete] unlock failed:', err?.message);
     }
@@ -210,7 +219,7 @@ export async function POST() {
   } catch (err) {
     console.error('[brief/complete] save failed:', err?.message);
     try {
-      await markComposeFinished(lead.id);
+      await releaseComposeLock(lead.id);
     } catch {
       /* still fail the request */
     }
