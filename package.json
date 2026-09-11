@@ -10,6 +10,7 @@
     "test": "node --test scripts/v2-backend.test.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0",
     "@neondatabase/serverless": "^1.0.1",
     "@vercel/blob": "^2.8.0",
     "next": "^14.2.35",

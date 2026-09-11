@@ -43,6 +43,7 @@ export default function BriefForm({ initial = {} }) {
   });
   const [sources, setSources] = useState(initialSources);
   const [logo, setLogo] = useState(null);
+  const [logoError, setLogoError] = useState(null);
   const [save, setSave] = useState('idle'); // idle | saving | failed
   const [errors, setErrors] = useState({});
   const [showNotes, setShowNotes] = useState(Boolean(initial.notes));
@@ -306,7 +307,7 @@ export default function BriefForm({ initial = {} }) {
                 onBlur={blurSave('phone')}
               />
               <div className="sm:col-span-2">
-                <LogoUpload onChange={setLogo} />
+                <LogoUpload onChange={uploadLogo} error={logoError} />
               </div>
             </div>
           </section>

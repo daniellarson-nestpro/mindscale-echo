@@ -65,7 +65,13 @@ export default async function AccountPage({ searchParams }) {
   const stripeSession = await loadStripeSession(sessionId);
   const meta = stripeSession?.metadata || {};
   const stripePaid = stripeSession?.payment_status === 'paid';
-  const purchased = ladder === 'purchased' || paidParam || stripePaid;
+  // ?paid=1 is set by our own Stripe return URL, but anyone signed in can type
+  // it. It is a hint about where the visitor came from, never evidence of
+  // payment: a paid order (ladder) or the retrieved Checkout session is. An
+  // abandoned checkout that lands back here with the flag must not be shown
+  // the Paid card, the status ladder, or the approval box — /api/approve 403s
+  // on it anyway, so believing the query string only produces a dead end.
+  const purchased = ladder === 'purchased' || stripePaid;
   const v1NeedsBrief = orders.some((order) => isPaid(order) && !hasBrief(order));
   const showV2Purchased = purchased && (paidParam || !v1NeedsBrief);
 
