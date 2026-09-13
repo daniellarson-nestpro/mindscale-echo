@@ -399,6 +399,24 @@ test('a stranger pays for a release and receives it', async ({ page }) => {
   });
 
   /* ---------- 11. the owner submits it to the vendor ---------- */
+  // SKIP_PR_SENT leaves a paid, approved order standing so the operator runbook
+  // drill (section 9) can perform this step with its own documented commands.
+  if (process.env.SKIP_PR_SENT === '1') {
+    note('pr_sent_response', 'skipped: SKIP_PR_SENT=1 (left for the runbook drill)');
+    evidence.finishedAt = new Date().toISOString();
+    evidence.leadId = leadId;
+    evidence.orderId = order.id;
+    evidence.composeRunId = runs[0].id;
+    evidence.stripeSessionId = sessionId;
+    mkdirSync('test-results', { recursive: true });
+    const host = new URL(evidence.baseURL).host.replace(/[^a-z0-9]+/gi, '-');
+    const partial = `test-results/walk-${host}-${identity.n}.json`;
+    writeFileSync(partial, JSON.stringify(evidence, null, 2));
+    console.log(`[walk] evidence written to ${partial}`);
+    console.log(`[walk] left standing for the drill: leadId=${leadId} orderId=${order.id}`);
+    return;
+  }
+
   const prSent = await page.request.post('/api/admin/pr-sent', {
     headers: { Authorization: `Bearer ${process.env.ADMIN_SECRET}` },
     data: { leadId, orderId: order.id },
