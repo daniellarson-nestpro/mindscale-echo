@@ -142,6 +142,17 @@ export default function BriefForm({ initial = {} }) {
     }
   }
 
+  /**
+   * LogoUpload POSTs the file to /api/logo itself and calls this back only
+   * after a 2xx, so this records the stored file and clears any prior error.
+   * It must exist: the JSX below passes it to LogoUpload, and an undefined
+   * identifier there is a render-time ReferenceError, not a dead prop.
+   */
+  function uploadLogo(file) {
+    setLogo(file || null);
+    setLogoError(null);
+  }
+
   /** Cancel debounce, wait for any in-flight PATCH, then save current fields + article. */
   async function flushSave() {
     clearTimeout(debounce.current);

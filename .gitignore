@@ -18,3 +18,7 @@ fixtures/
 
 .env*.local
 .gstack/
+
+# Playwright e2e output (videos, traces, walk evidence JSON)
+test-results/
+playwright-report/

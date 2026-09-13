@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --test scripts/v2-backend.test.mjs"
+    "test": "node --test scripts/v2-backend.test.mjs",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.0",
@@ -19,6 +20,7 @@
     "stripe": "^16.12.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "autoprefixer": "^10.5.4",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19"
