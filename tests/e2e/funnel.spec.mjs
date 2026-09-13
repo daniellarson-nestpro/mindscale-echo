@@ -73,12 +73,11 @@ async function payWithTestCard(page) {
   note('stripe_checkout_url', new URL(page.url()).pathname.slice(0, 24) + '…');
 
   const cardNumber = page.locator('#cardNumber');
-  // The sandbox offers Card / Cash App / Affirm / Klarna / Bank, and the card
-  // fields only exist once Card is chosen.
-  if (!(await cardNumber.isVisible({ timeout: 15000 }).catch(() => false))) {
-    const radio = page.getByRole('radio', { name: /^card$/i }).first();
-    if (await radio.count()) await radio.click({ timeout: 15000 }).catch(() => {});
-    else await page.getByText('Card', { exact: true }).first().click().catch(() => {});
+  // The sandbox offers Card / Cash App / Affirm / Klarna / Bank and the card
+  // fields only render once Card is chosen. The accordion's own button is an
+  // offscreen click area, so the row itself is what a customer clicks.
+  if (!(await cardNumber.isVisible({ timeout: 10000 }).catch(() => false))) {
+    await page.locator('[data-testid="card-accordion-item"]').click();
   }
   await cardNumber.waitFor({ state: 'visible', timeout: 90000 });
 
@@ -91,13 +90,10 @@ async function payWithTestCard(page) {
   await fillIfPresent(page, '#phoneNumber', '6125550148', { type: true });
 
   // Link would take the return trip through its own sign-up prompt.
-  const saveInfo = page.getByRole('checkbox', { name: /save my information/i }).first();
-  if (await saveInfo.count()) await saveInfo.uncheck({ timeout: 10000 }).catch(() => {});
+  const saveInfo = page.locator('#enableStripePass');
+  if (await saveInfo.count()) await saveInfo.uncheck({ force: true }).catch(() => {});
 
-  const submit = page
-    .locator('[data-testid="hosted-payment-submit-button"], .SubmitButton, button[type="submit"]')
-    .first();
-  await submit.click();
+  await page.getByTestId('hosted-payment-submit-button').click();
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -280,13 +276,34 @@ test('a stranger pays for a release and receives it', async ({ page }) => {
   /* ---------- 8. pay ---------- */
   await page.getByRole('button', { name: /^Send it out$/ }).click();
   await page.waitForURL(/\/checkout\?token=/, { timeout: 60000 });
+  // The session id has to be captured on the way out: the button navigates
+  // straight to Stripe, so the response body is gone a moment later, and the
+  // return URL loses ?session_id= when /account hands an arrival without a
+  // cookie for that host to /api/auth/claim.
+  let sessionId = null;
+  await page.route('**/api/checkout', async (route) => {
+    const response = await route.fetch();
+    const body = await response.text();
+    try {
+      sessionId = JSON.parse(body).id;
+    } catch {
+      /* fall back to the Stripe lookup below */
+    }
+    await route.fulfill({ response, body });
+  });
   await page.getByRole('button', { name: new RegExp(`Send it out — \\${PLAN.priceLabel}`) }).click();
 
   await payWithTestCard(page);
   await page.waitForURL(/\/account/, { timeout: 180000 });
-  const accountUrl = new URL(page.url());
-  const sessionId = accountUrl.searchParams.get('session_id');
-  expect(sessionId, 'Stripe session id on the return URL').toMatch(/^cs_test_/);
+  note('post_checkout_landing', new URL(page.url()).pathname);
+
+  if (!sessionId) {
+    const recent = await stripeApi('/checkout/sessions?limit=20');
+    sessionId = recent.data.find(
+      (s) => (s.customer_details?.email || s.customer_email || '').toLowerCase() === EMAIL,
+    )?.id;
+  }
+  expect(sessionId, 'Stripe Checkout session id').toMatch(/^cs_test_/);
   note('checkout_session', sessionId);
 
   const stripeSession = await stripeApi(`/checkout/sessions/${sessionId}`);
@@ -356,14 +373,29 @@ test('a stranger pays for a release and receives it', async ({ page }) => {
   await expect(page.getByText('Paid').first()).toBeVisible();
   await expect(page.getByText(/Brief received/).first()).toBeVisible();
   await expect(page.getByText('Release approved').first()).toBeVisible();
-  await expect(page.locator(`a[href="/preview/${leadId}"]`).first()).toBeVisible();
   const accountText = await page.locator('main').innerText();
   expect(accountText).toContain(COMPANY);
+
+  // "Read it" must actually reach this customer's release. The href is
+  // /preview/demo when the workspace is opened without the checkout query
+  // string — that token resolves to the signed-in lead, so what matters is the
+  // page it lands on, not the id in the URL.
+  const readIt = page.getByRole('link', { name: /Read it/ }).first();
+  await expect(readIt).toBeVisible();
+  const draftHref = await readIt.getAttribute('href');
+  await readIt.click();
+  await page.waitForURL(/\/preview\//, { timeout: 60000 });
+  await expect(page.getByRole('heading', { level: 2 }).first()).toContainText(
+    String(draft.headline).slice(0, 30),
+  );
+  // innerText applies the CSS uppercase on those labels, so compare case-blind.
+  const accountFlat = accountText.toLowerCase();
   note('account_page', {
-    paid: accountText.includes('Paid'),
-    brief_received: /Brief received/.test(accountText),
-    approved: accountText.includes('Release approved'),
-    draft_link: `/preview/${leadId}`,
+    paid: accountFlat.includes('paid'),
+    brief_received: accountFlat.includes('brief received'),
+    approved: accountFlat.includes('release approved'),
+    draft_link: draftHref,
+    draft_reachable: true,
   });
 
   /* ---------- 11. the owner submits it to the vendor ---------- */
