@@ -43,6 +43,7 @@ export default function BriefForm({ initial = {} }) {
   });
   const [sources, setSources] = useState(initialSources);
   const [logo, setLogo] = useState(null);
+  const [logoError, setLogoError] = useState(null);
   const [save, setSave] = useState('idle'); // idle | saving | failed
   const [errors, setErrors] = useState({});
   const [showNotes, setShowNotes] = useState(Boolean(initial.notes));
@@ -139,6 +140,17 @@ export default function BriefForm({ initial = {} }) {
     } finally {
       if (inflight.current === request) inflight.current = null;
     }
+  }
+
+  /**
+   * LogoUpload POSTs the file to /api/logo itself and calls this back only
+   * after a 2xx, so this records the stored file and clears any prior error.
+   * It must exist: the JSX below passes it to LogoUpload, and an undefined
+   * identifier there is a render-time ReferenceError, not a dead prop.
+   */
+  function uploadLogo(file) {
+    setLogo(file || null);
+    setLogoError(null);
   }
 
   /** Cancel debounce, wait for any in-flight PATCH, then save current fields + article. */
@@ -306,7 +318,7 @@ export default function BriefForm({ initial = {} }) {
                 onBlur={blurSave('phone')}
               />
               <div className="sm:col-span-2">
-                <LogoUpload onChange={setLogo} />
+                <LogoUpload onChange={uploadLogo} error={logoError} />
               </div>
             </div>
           </section>

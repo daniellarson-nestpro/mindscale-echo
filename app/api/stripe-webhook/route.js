@@ -56,7 +56,7 @@ export async function POST(request) {
 
   // Owner notification (Telegram + email)
   if (order) {
-    notifyOwnerPaymentSuccess({
+    await notifyOwnerPaymentSuccess({
       leadId: order.lead_id || '',
       email: order.email,
       plan: order.plan,
@@ -64,8 +64,12 @@ export async function POST(request) {
     }).catch(() => {});
 
     // Mark lead paid, or approved if they already signed off on the draft.
+    // Awaited: this is a database write, not a notification. Detached from the
+    // response it can be cut off when the instance freezes, which leaves a paid
+    // and approved customer stuck one rung down the ladder. Stripe allows this
+    // request the time; a thrown error still 200s below.
     if (order.lead_id) {
-      (async () => {
+      try {
         const applied = await applyExistingApprovalToPaidOrder(order);
         if (applied) {
           await recordStatusTransition({
@@ -75,17 +79,19 @@ export async function POST(request) {
             toStatus: 'approved',
             actor: 'stripe_webhook',
           });
-          return;
+        } else {
+          await updateLeadOrderStatus(order.lead_id, 'paid');
+          await recordStatusTransition({
+            leadId: order.lead_id,
+            orderId: order.id,
+            fromStatus: null,
+            toStatus: 'paid',
+            actor: 'stripe_webhook',
+          });
         }
-        await updateLeadOrderStatus(order.lead_id, 'paid');
-        await recordStatusTransition({
-          leadId: order.lead_id,
-          orderId: order.id,
-          fromStatus: null,
-          toStatus: 'paid',
-          actor: 'stripe_webhook',
-        });
-      })().catch(() => {});
+      } catch (err) {
+        console.error('[stripe-webhook] lead status update failed:', err?.message);
+      }
     }
   }
 

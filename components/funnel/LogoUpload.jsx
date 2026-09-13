@@ -6,7 +6,9 @@ import { Check } from '../Icons';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_EDGE = 2000;
-const OK_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
+// SVG is deliberately absent: blobs are served public with their own
+// content-type, so a script-bearing SVG would be stored XSS on the blob origin.
+const OK_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 /**
  * Downscales client-side before upload so the 5MB server cap never fires.
@@ -15,7 +17,6 @@ const OK_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
  * doing exactly what we told them to do. An 8MB photo lands around 400KB.
  */
 async function downscale(file) {
-  if (file.type === 'image/svg+xml') return file;
   if (typeof createImageBitmap === 'undefined') return file;
 
   try {
@@ -44,7 +45,7 @@ async function downscale(file) {
   }
 }
 
-export default function LogoUpload({ onChange }) {
+export default function LogoUpload({ onChange, error: serverError = null }) {
   const [picked, setPicked] = useState(null);
   const [error, setError] = useState(null);
   const [dragging, setDragging] = useState(false);
@@ -190,9 +191,9 @@ export default function LogoUpload({ onChange }) {
 
       <p className="mt-2 text-[0.78rem] leading-relaxed text-white/32">{FIELDS.logo.hint}</p>
 
-      {error && (
+      {(error || serverError) && (
         <p role="alert" className="mt-2 text-[0.82rem] leading-relaxed text-amber-200/85">
-          {error}
+          {error || serverError}
         </p>
       )}
 
@@ -200,7 +201,7 @@ export default function LogoUpload({ onChange }) {
         ref={inputRef}
         type="file"
         name="logo"
-        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+        accept="image/png,image/jpeg,image/webp"
         className="sr-only"
         onChange={(e) => take(e.target.files?.[0])}
       />

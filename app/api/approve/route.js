@@ -130,11 +130,16 @@ export async function POST(request) {
     });
   }
 
-  notifyOwnerApproval({
+  // Awaited on purpose. Notifications fired after the response are not
+  // guaranteed to run on Vercel — the instance can be frozen the moment the
+  // response is flushed — and this one owes the customer the "you approved it"
+  // email. notifyOwnerApproval settles every channel internally and never
+  // throws, so awaiting it cannot fail the approval that is already recorded.
+  await notifyOwnerApproval({
     leadId: lead.id,
     email: session.email,
     orderId: order?.id || null,
-  }).catch(() => {});
+  });
 
   console.info('[approve] approved', { leadId: lead.id, orderId: order?.id || null });
 

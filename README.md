@@ -212,8 +212,7 @@ No extra env vars. Reuses `RESEND_API_KEY` and `EMAIL_FROM`.
 | `RESEND_API_KEY`         | Yes (prod email) | Resend API key for purchase confirmation and magic-link email.      |
 | `EMAIL_FROM`             | Yes (prod email) | Verified from-address, e.g. `Mindscale Echo <hello@domain.com>`.    |
 | `ONBOARDING_WEBHOOK_URL` | Optional | Extra JSON POST of every saved brief (Zapier / Make / etc.).           |
-| `N8N_WEBHOOK_URL`        | Optional | n8n compose webhook. Defaults to `https://nestpro.app.n8n.cloud/webhook/press-release`. |
-| `N8N_WEBHOOK_SECRET`     | Optional | Sent as `X-API-Key` on the n8n POST. n8n may not check it yet.         |
+| `ANTHROPIC_API_KEY`      | Required | Press-release composer. Two Claude calls: facts extraction, then composition. Without it, compose returns a launch-blocker 503. |
 
 No secret is ever hardcoded, and `.env` / `.env.local` are gitignored.
 
@@ -279,7 +278,7 @@ still a hook (`await logo.arrayBuffer()` → S3, R2, Supabase Storage, or Upload
 
 Collected fields: company name, website, contact name, contact email, article URL,
 announcement type, preferred quote + attribution, free-form notes, and an optional logo
-(≤ 5 MB, PNG/JPEG/SVG/WebP).
+(≤ 5 MB, PNG/JPEG/WebP — SVG is rejected as a stored-XSS vector).
 
 ---
 
