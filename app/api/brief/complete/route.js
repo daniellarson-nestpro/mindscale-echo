@@ -201,20 +201,22 @@ export async function POST() {
       console.error('[brief/complete] unlock failed:', err?.message);
     }
     // Notify owner of compose failure
-    notifyOwnerComposeFailed({ leadId: lead.id, email: session.email, error: result.error }).catch(
-      () => {}
-    );
+    await notifyOwnerComposeFailed({
+      leadId: lead.id,
+      email: session.email,
+      error: result.error,
+    });
     return failResponse(result.error, statusForComposeError(result.error));
   }
 
   try {
     const saved = await saveComposeSuccess(lead.id, normalizeComposeResponse(result.draft));
     // Notify owner draft is ready
-    notifyOwnerDraftReady({
+    await notifyOwnerDraftReady({
       leadId: lead.id,
       email: session.email,
       companyName: lead.company_name,
-    }).catch(() => {});
+    });
     return okResponse(saved || lead);
   } catch (err) {
     console.error('[brief/complete] save failed:', err?.message);

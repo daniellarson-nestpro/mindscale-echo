@@ -99,7 +99,10 @@ export async function POST(request) {
 
   // Delivers the "we will notify you when it is sent" promise made at approval.
   // Never allowed to fail the transition — the status change already happened.
-  notifyPrSent({ leadId, orderId: orderId || null, email: lead.email }).catch(() => {});
+  // Awaited: "we will notify you when it is sent" is the promise this endpoint
+  // keeps, and post-response work is not guaranteed to run on Vercel.
+  // notifyPrSent settles every channel internally and never throws.
+  await notifyPrSent({ leadId, orderId: orderId || null, email: lead.email });
 
   console.info('[admin/pr-sent] pr_sent', { leadId, orderId });
 

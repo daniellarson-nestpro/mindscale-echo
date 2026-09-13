@@ -55,17 +55,32 @@ async function fillIfPresent(page, selector, value, { type = false } = {}) {
   const field = page.locator(selector).first();
   if (!(await field.count())) return false;
   if (!(await field.isVisible().catch(() => false))) return false;
-  if (type) await field.pressSequentially(value, { delay: 18 });
-  else await field.fill(value);
-  return true;
+  // Stripe prefills and locks the email when customer_email is set on the
+  // session, so a readonly field is expected, not a failure.
+  if (!(await field.isEditable().catch(() => false))) return false;
+  try {
+    if (type) await field.pressSequentially(value, { delay: 18 });
+    else await field.fill(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The hosted Stripe Checkout page (no iframes; inputs carry stable ids). */
 async function payWithTestCard(page) {
   await page.waitForURL(/checkout\.stripe\.com/, { timeout: 120000 });
-  const cardNumber = page.locator('#cardNumber');
-  await cardNumber.waitFor({ state: 'visible', timeout: 90000 });
   note('stripe_checkout_url', new URL(page.url()).pathname.slice(0, 24) + '…');
+
+  const cardNumber = page.locator('#cardNumber');
+  // The sandbox offers Card / Cash App / Affirm / Klarna / Bank, and the card
+  // fields only exist once Card is chosen.
+  if (!(await cardNumber.isVisible({ timeout: 15000 }).catch(() => false))) {
+    const radio = page.getByRole('radio', { name: /^card$/i }).first();
+    if (await radio.count()) await radio.click({ timeout: 15000 }).catch(() => {});
+    else await page.getByText('Card', { exact: true }).first().click().catch(() => {});
+  }
+  await cardNumber.waitFor({ state: 'visible', timeout: 90000 });
 
   await fillIfPresent(page, '#email', EMAIL);
   await cardNumber.pressSequentially('4242424242424242', { delay: 18 });
@@ -74,6 +89,10 @@ async function payWithTestCard(page) {
   await fillIfPresent(page, '#billingName', CONTACT);
   await fillIfPresent(page, '#billingPostalCode', '55401', { type: true });
   await fillIfPresent(page, '#phoneNumber', '6125550148', { type: true });
+
+  // Link would take the return trip through its own sign-up prompt.
+  const saveInfo = page.getByRole('checkbox', { name: /save my information/i }).first();
+  if (await saveInfo.count()) await saveInfo.uncheck({ timeout: 10000 }).catch(() => {});
 
   const submit = page
     .locator('[data-testid="hosted-payment-submit-button"], .SubmitButton, button[type="submit"]')
@@ -227,16 +246,21 @@ test('a stranger pays for a release and receives it', async ({ page }) => {
     rows: runs.length,
   });
 
-  const draftEmail = await waitForEmail(EMAIL, /press release draft is ready/, { timeout: 120000 })
-    .catch((err) => ({ error: err.message }));
-  note('draft_ready_email', draftEmail.id ? { id: draftEmail.id, last_event: draftEmail.last_event } : draftEmail);
+  const draftEmail = await waitForEmail(EMAIL, /press release draft is ready/, { timeout: 240000 });
+  note('draft_ready_email', { id: draftEmail.id, last_event: draftEmail.last_event });
 
   /* ---------- 7. read it, approve it ---------- */
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Read it before you decide.');
   await expect(page.getByRole('heading', { level: 2 }).first()).toContainText(/\w/);
   await page.getByRole('checkbox').check();
+  const approveResponse = page.waitForResponse(
+    (r) => r.url().includes('/api/approve') && r.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: 'Approve this release' }).click();
-  await expect(page.getByText('Release approved')).toBeVisible();
+  expect((await approveResponse).status(), 'POST /api/approve').toBe(200);
+  // PreviewScreen swaps the checkbox for the approved line as soon as the POST
+  // returns, so this is the copy that proves it landed.
+  await expect(page.getByText(/Approved\. You can send it out/)).toBeVisible();
 
   const approvals = await q(
     'SELECT id, lead_id, order_id, approver_email, checkbox_version, approved_at FROM approvals WHERE lead_id = $1',
@@ -246,10 +270,12 @@ test('a stranger pays for a release and receives it', async ({ page }) => {
   expect(approvals[0].approver_email).toBe(EMAIL);
   note('approval_row', { id: approvals[0].id, version: approvals[0].checkbox_version });
 
-  const approvedEmail = await waitForEmail(EMAIL, /You approved your Mindscale Echo press release/, {
-    timeout: 120000,
-  }).catch((err) => ({ error: err.message }));
-  note('approved_email', approvedEmail.id ? { id: approvedEmail.id, last_event: approvedEmail.last_event } : approvedEmail);
+  const approvedEmail = await waitForEmail(
+    EMAIL,
+    /You approved your Mindscale Echo press release/,
+    { timeout: 240000 },
+  );
+  note('approved_email', { id: approvedEmail.id, last_event: approvedEmail.last_event });
 
   /* ---------- 8. pay ---------- */
   await page.getByRole('button', { name: /^Send it out$/ }).click();

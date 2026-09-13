@@ -1260,14 +1260,43 @@ test('Telegram config: launch blocker logged when not configured', () => {
 });
 
 test('notification failure never propagates to caller', () => {
-  // Verify callers fire notifications as best-effort (no await or .catch)
+  // The customer-facing notifications are awaited now: a promise left running
+  // after the response is not guaranteed to finish on Vercel, and an approval
+  // or pr_sent email that silently never sends breaks a written promise. That
+  // makes notify.js's own no-throw guarantee load-bearing.
+  const notifySrc = rfs(jn(HERE, '../lib/notify.js'), 'utf8');
+  assert.ok(notifySrc.includes('Promise.allSettled'), 'notify settles every channel');
+  assert.ok(notifySrc.includes('} catch (err)'), 'notify.js handles internal errors');
   const webhookSrc = rfs(jn(HERE, '../app/api/stripe-webhook/route.js'), 'utf8');
   assert.ok(webhookSrc.includes('.catch(() => {})'), 'webhook suppresses notification errors');
   const completeSrc = rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8');
-  assert.ok(completeSrc.includes('.catch(() => {})'), 'brief/complete suppresses notification errors');
-  // notify.js itself uses try/catch to avoid propagating errors outward
-  const notifySrc = rfs(jn(HERE, '../lib/notify.js'), 'utf8');
-  assert.ok(notifySrc.includes('} catch (err)'), 'notify.js handles internal errors');
+  assert.match(completeSrc, /await notifyOwnerDraftReady\(/, 'draft-ready is awaited');
+});
+
+test('customer-facing notifications are awaited, not fired and forgotten', () => {
+  // Regression guard: each of these owes the customer an email, and detached
+  // work can be cut off the moment the response is flushed.
+  assert.match(
+    rfs(jn(HERE, '../app/api/approve/route.js'), 'utf8'),
+    /await notifyOwnerApproval\(/,
+    'approve awaits the approval confirmation'
+  );
+  assert.match(
+    rfs(jn(HERE, '../app/api/admin/pr-sent/route.js'), 'utf8'),
+    /await notifyPrSent\(/,
+    'pr-sent awaits the submitted email'
+  );
+  assert.match(
+    rfs(jn(HERE, '../app/api/brief/complete/route.js'), 'utf8'),
+    /await notifyOwnerComposeFailed\(/,
+    'compose failure awaits its notification'
+  );
+  // The webhook's lead promotion is a database write, not a notification.
+  assert.match(
+    rfs(jn(HERE, '../app/api/stripe-webhook/route.js'), 'utf8'),
+    /const applied = await applyExistingApprovalToPaidOrder\(order\);/,
+    'the paid -> approved promotion is awaited inside the request'
+  );
 });
 
 test('ownership: brief and approve routes require session auth', () => {
@@ -2083,7 +2112,7 @@ test('notifications: pr_sent reaches the customer from the admin hook', () => {
   const route = readA('app/api/admin/pr-sent/route.js');
   assert.match(route, /notifyPrSent\(/, 'the release-sent promise must be kept');
   assert.match(route, /SELECT id, email, order_status/, 'needs the address to notify');
-  assert.match(route, /\.catch\(\(\) => \{\}\)/, 'notification must not fail the transition');
+  assert.match(route, /await notifyPrSent\(/, 'the email is sent inside the request, not after it');
   assert.match(readA('lib/notify.js'), /export async function notifyPrSent/);
 });
 
