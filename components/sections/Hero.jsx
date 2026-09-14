@@ -1,10 +1,8 @@
 import { BRAND, START_HREF, PLACEMENT_URL } from '../../lib/content';
 import BroadcastHero from '../BroadcastHero';
-import { ArrowUpRight, ArrowDown } from '../Icons';
+import { ArrowUpRight } from '../Icons';
 
 export default function Hero() {
-  const placementExternal = Boolean(PLACEMENT_URL);
-  const placementHref = PLACEMENT_URL || '#trophy';
 
   return (
     <section id="top" className="relative overflow-hidden pb-14 pt-28 sm:pt-36 lg:pb-20 lg:pt-40">
@@ -46,14 +44,19 @@ export default function Hero() {
                   <ArrowUpRight />
                 </span>
               </a>
-              <a
-                href={placementHref}
-                className="btn btn-ghost justify-between sm:justify-start"
-                {...(placementExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
-              >
-                {BRAND.secondaryCta}
-                <span className="btn-nib">{placementExternal ? <ArrowUpRight /> : <ArrowDown />}</span>
-              </a>
+              {PLACEMENT_URL ? (
+                <a
+                  href={PLACEMENT_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-ghost justify-between sm:justify-start"
+                >
+                  {BRAND.secondaryCta}
+                  <span className="btn-nib">
+                    <ArrowUpRight />
+                  </span>
+                </a>
+              ) : null}
             </div>
 
             <p className="mt-5 text-[0.82rem] text-white/38">{BRAND.trustLine}</p>

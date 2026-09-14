@@ -2413,3 +2413,12 @@ test('sendDayLabel: 2pm CST cutoff on business days', async () => {
   assert.equal(sendDayLabel(new Date('2026-09-18T20:00:00Z')), 'Monday');
   assert.equal(sendDayLabel(new Date('2026-09-19T15:00:00Z')), 'Monday');
 });
+
+test('hero: "See a real placement" is hidden until PLACEMENT_URL is a real URL', async () => {
+  const { PLACEMENT_URL } = await import('../lib/content.js');
+  const hero = readFileSync(join(HERE, '../components/sections/Hero.jsx'), 'utf8');
+  assert.ok(hero.includes('{PLACEMENT_URL ? ('), 'button is conditional on PLACEMENT_URL');
+  assert.equal(hero.includes('#trophy'), false, 'never falls back to the illustrative example');
+  if (!PLACEMENT_URL) return;
+  assert.match(PLACEMENT_URL, /^https:\/\//, 'a set PLACEMENT_URL must be a live https link');
+});
