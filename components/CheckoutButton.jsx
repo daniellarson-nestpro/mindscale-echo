@@ -33,6 +33,11 @@ export default function CheckoutButton({
         window.location.assign(data.previewUrl);
         return;
       }
+      // No approved draft yet: the server says where to go instead of Stripe.
+      if (data?.code === 'draft_required' && data.redirect) {
+        window.location.assign(data.redirect);
+        return;
+      }
       if (!res.ok || !data.url) {
         throw new Error(data.error || 'Checkout is unavailable right now.');
       }

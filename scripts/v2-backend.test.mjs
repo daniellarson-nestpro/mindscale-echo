@@ -255,8 +255,9 @@ test('progress: verifying email lands a new customer on the brief, not checkout'
   assert.match(callback, /pathForStep\(progress\.furthestStep\)/, 'callback routes on the step');
 });
 
-test('checkout: anonymous demo stays open, a lead without a draft goes back to the brief', () => {
-  assert.equal(checkoutGateFor({ lead: null, hasRealDraft: false, alreadyApproved: false, token: 'demo' }), null);
+test('checkout: anonymous goes to /start, a lead without a draft goes back to the brief', () => {
+  assert.equal(checkoutGateFor({ lead: null, hasRealDraft: false, alreadyApproved: false, token: 'demo' }), '/start');
+  assert.equal(checkoutGateFor({ lead: null, hasRealDraft: false, alreadyApproved: false, token: null }), '/start');
   const lead = { id: 'lead-1', email: 'a@b.co' };
   assert.equal(checkoutGateFor({ lead, hasRealDraft: false, alreadyApproved: false, token: 'lead-1' }), '/brief');
   assert.equal(
@@ -2358,3 +2359,57 @@ test('BriefForm persists articleText on source change and flushes before compose
   assert.ok(!briefSrc.includes('DEMO_DRAFT'), 'no fake draft on the brief');
 });
 
+
+/* ---------- pre-launch: approve before pay, legal, timing ---------- */
+
+test('homepage never opens Stripe: every buy CTA links to /start', () => {
+  const home = ['components/sections/Hero.jsx', 'components/sections/Pricing.jsx', 'components/sections/Footer.jsx', 'components/sections/Trophy.jsx', 'components/Nav.jsx', 'components/StickyBuyBar.jsx'];
+  for (const file of home) {
+    const src = readFileSync(join(HERE, '..', file), 'utf8');
+    assert.equal(src.includes('CheckoutButton'), false, `${file} must not mount CheckoutButton`);
+    assert.equal(src.includes("href=\"#pricing\" className=\"btn"), false, `${file} must not use #pricing as a buy button`);
+    assert.equal(src.includes('START_HREF'), true, `${file} links to /start`);
+    assert.equal(src.includes('Launch My Release'), false, `${file} uses the new CTA copy`);
+  }
+  const checkoutScreen = readFileSync(join(HERE, '../components/funnel/CheckoutScreen.jsx'), 'utf8');
+  assert.equal(checkoutScreen.includes('CheckoutButton'), true, '/checkout is the only Stripe surface');
+  assert.equal(checkoutScreen.includes('href="/terms"'), true, 'checkout carries the Terms consent link');
+});
+
+test('/call: no env-var text, and the booker only renders with a real calendar', () => {
+  const call = readFileSync(join(HERE, '../app/call/page.jsx'), 'utf8');
+  assert.equal(/<code[^>]*>[^<]*NEXT_PUBLIC/.test(call), false, 'no env-var name rendered on the page');
+  assert.equal(call.includes('CALL.h1'), true);
+  const checkoutScreen = readFileSync(join(HERE, '../components/funnel/CheckoutScreen.jsx'), 'utf8');
+  assert.equal(checkoutScreen.includes('!CALENDAR_URL ? null'), true, 'Book 30 minutes is gated on NEXT_PUBLIC_CALENDAR_URL');
+});
+
+test('legal: /terms and /privacy exist and every footer links to them', () => {
+  assert.ok(readFileSync(join(HERE, '../app/terms/page.jsx'), 'utf8').includes('TERMS_MD'));
+  assert.ok(readFileSync(join(HERE, '../app/privacy/page.jsx'), 'utf8').includes('PRIVACY_MD'));
+  for (const file of ['components/FooterBar.jsx', 'components/funnel/FunnelShell.jsx']) {
+    const src = readFileSync(join(HERE, '..', file), 'utf8');
+    assert.ok(src.includes('href="/terms"') && src.includes('href="/privacy"'), `${file} links Terms and Privacy`);
+  }
+  const terms = readFileSync(join(HERE, '../content/legal/terms.js'), 'utf8');
+  assert.ok(terms.includes('Named-outlet guarantee'), 'terms carry the 14-day named-URL guarantee');
+  assert.ok(terms.includes('You pay after you approve the draft'), 'terms match approve-before-pay');
+  assert.equal(terms.includes('podcast'), false);
+  assert.equal(terms.includes('Before publishing'), false);
+});
+
+test('counters: the odometer never renders 0+ before the count starts', () => {
+  const src = readFileSync(join(HERE, '../components/Odometer.jsx'), 'utf8');
+  assert.ok(src.includes('useState(value)'), 'server HTML carries the real value');
+  assert.ok(/done\.current = true;\s*setDisplay\(0\);/.test(src), 'reset to 0 happens only when the count runs');
+});
+
+test('sendDayLabel: 2pm CST cutoff on business days', async () => {
+  const { sendDayLabel } = await import('../lib/draft.js');
+  // 2026-09-14 is a Monday. 13:00 Chicago (CDT, UTC-5) = 18:00Z; 14:30 Chicago = 19:30Z.
+  assert.equal(sendDayLabel(new Date('2026-09-14T18:00:00Z')), 'today');
+  assert.equal(sendDayLabel(new Date('2026-09-14T19:30:00Z')), 'Tuesday');
+  // Friday after cutoff → Monday; Saturday any time → Monday.
+  assert.equal(sendDayLabel(new Date('2026-09-18T20:00:00Z')), 'Monday');
+  assert.equal(sendDayLabel(new Date('2026-09-19T15:00:00Z')), 'Monday');
+});

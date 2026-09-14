@@ -2,7 +2,7 @@ import { SCALE, MEDIA_BADGES, AI_BADGES, BRAND } from '../../lib/content';
 import Odometer from '../Odometer';
 
 export default function ScaleStrip() {
-  const track = [...MEDIA_BADGES, ...MEDIA_BADGES];
+  const track = [...MEDIA_BADGES, ...MEDIA_BADGES, ...MEDIA_BADGES, ...MEDIA_BADGES];
 
   return (
     <section id="reach" className="relative overflow-hidden py-16 md:py-20">
@@ -23,10 +23,10 @@ export default function ScaleStrip() {
           ))}
         </div>
 
-        <p className="mt-10 text-[0.86rem] text-white/45">{BRAND.credibility}</p>
+        <p className="mt-10 text-[0.86rem] text-white/45">{BRAND.logoStripCaption}</p>
       </div>
 
-      {/* Volume and flow, not a list of twelve things. */}
+      {/* The five named outlets, on a loop. */}
       <div className="marquee mt-12" aria-hidden="true">
         <div className="marquee-track">
           {track.map((name, i) => (
@@ -40,7 +40,7 @@ export default function ScaleStrip() {
       <div className="page-shell mt-10">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="font-mono text-[10px] uppercase tracking-eyebrow text-echo-violet">
-            AI indexing layer — Premium
+            AIWire — Premium
           </p>
           <ul className="flex flex-wrap gap-2">
             {AI_BADGES.map((name) => (
@@ -51,8 +51,8 @@ export default function ScaleStrip() {
           </ul>
         </div>
         <p className="mt-6 font-mono text-[10px] uppercase leading-relaxed tracking-eyebrow text-white/25">
-          Distribution network — eligible placements vary by package, newsworthiness, and
-          editorial discretion
+          AP News, Business Insider, and Yahoo Finance on every package. StreetInsider, Benzinga,
+          and AIWire on Premium.
         </p>
       </div>
     </section>

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { ArrowUpRight } from './Icons';
 import AuthNavLink from './AuthNavLink';
+import { BRAND, START_HREF } from '../lib/content';
 
 const LINKS = [
   { id: 'reach', label: 'Reach' },
@@ -22,7 +23,7 @@ export default function Nav({ userEmail = '' }) {
   const isHome = pathname === '/';
   const to = (id) => (isHome ? `#${id}` : `/#${id}`);
   const links = LINKS.map((l) => ({ ...l, href: to(l.id) }));
-  const buyHref = to('pricing');
+  const buyHref = START_HREF;
 
   // Release the scroll lock synchronously: React's state update is batched, so
   // clearing it in an effect can land after the browser's fragment jump — and
@@ -95,7 +96,7 @@ export default function Nav({ userEmail = '' }) {
               <AuthNavLink className="text-[0.85rem] text-white/55 transition-colors duration-500 ease-haptic hover:text-white" />
             )}
             <a href={buyHref} className="btn btn-primary hidden text-[0.85rem] sm:inline-flex">
-              Launch My Release
+              {BRAND.primaryCta}
               <span className="btn-nib">
                 <ArrowUpRight />
               </span>
@@ -192,7 +193,7 @@ export default function Nav({ userEmail = '' }) {
               'transform 800ms cubic-bezier(0.16,1,0.3,1) 420ms, opacity 800ms cubic-bezier(0.16,1,0.3,1) 420ms',
           }}
         >
-          Launch My Release
+          {BRAND.primaryCta}
           <span className="btn-nib">
             <ArrowUpRight />
           </span>

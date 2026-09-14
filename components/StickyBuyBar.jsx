@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { ArrowUpRight } from './Icons';
+import { BRAND, START_HREF } from '../lib/content';
 
 /**
  * Mobile-only. Without this there is no way to buy for ~9,000px after the hero
@@ -52,8 +53,8 @@ export default function StickyBuyBar() {
         opacity: show ? 1 : 0,
       }}
     >
-      <a href="#pricing" className="btn btn-primary w-full justify-between">
-        Launch My Release — $499
+      <a href={START_HREF} className="btn btn-primary w-full justify-between">
+        {BRAND.primaryCta}
         <span className="btn-nib">
           <ArrowUpRight />
         </span>

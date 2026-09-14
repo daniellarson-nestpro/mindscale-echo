@@ -2,12 +2,19 @@ import Nav from '../../components/Nav';
 import Footer from '../../components/sections/Footer';
 import { ArrowUpRight, ArrowRight } from '../../components/Icons';
 import { PLANS } from '../../lib/plans';
+import { CANCEL } from '../../lib/draft';
+import { SUPPORT_EMAIL } from '../../lib/funnel';
 
 export const metadata = {
   title: 'Checkout cancelled | Mindscale Echo',
   robots: { index: false, follow: false },
 };
 
+/**
+ * Stripe's cancel_url. "Return to packages" goes back to /checkout, whose
+ * server gate resumes the approved draft — or sends a signed-out visitor to
+ * /start, which is the honest place to begin.
+ */
 export default function CancelPage() {
   return (
     <>
@@ -17,13 +24,12 @@ export default function CancelPage() {
           <div className="mx-auto max-w-2xl">
             <div className="bezel">
               <div className="bezel-core p-8 text-center sm:p-14">
-                <span className="eyebrow">Checkout cancelled</span>
+                <span className="eyebrow">No charge</span>
                 <h1 className="mt-7 text-[2.4rem] leading-[1] sm:text-[3.1rem]">
-                  <span className="text-gradient">No charge was made.</span>
+                  <span className="text-gradient">{CANCEL.h1}</span>
                 </h1>
                 <p className="mx-auto mt-5 max-w-md text-[1rem] leading-relaxed text-white/55">
-                  Your card was not charged and nothing has been distributed. Pick a package
-                  whenever you’re ready — your story keeps.
+                  {CANCEL.body}
                 </p>
 
                 <div className="mt-9 grid gap-3 sm:grid-cols-2">
@@ -48,14 +54,14 @@ export default function CancelPage() {
                 </div>
 
                 <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-                  <a href="/#pricing" className="btn btn-primary">
-                    Return to pricing
+                  <a href="/checkout" className="btn btn-primary">
+                    {CANCEL.cta}
                     <span className="btn-nib">
                       <ArrowRight />
                     </span>
                   </a>
                   <a
-                    href="mailto:hello@mindscalepartners.com?subject=Question%20about%20Mindscale%20Echo"
+                    href={`mailto:${SUPPORT_EMAIL}?subject=Question%20about%20Mindscale%20Echo`}
                     className="btn btn-ghost"
                   >
                     Ask a question first

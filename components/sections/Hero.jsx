@@ -1,9 +1,11 @@
-import { BRAND } from '../../lib/content';
-import { PLANS } from '../../lib/plans';
+import { BRAND, START_HREF, PLACEMENT_URL } from '../../lib/content';
 import BroadcastHero from '../BroadcastHero';
 import { ArrowUpRight, ArrowDown } from '../Icons';
 
 export default function Hero() {
+  const placementExternal = Boolean(PLACEMENT_URL);
+  const placementHref = PLACEMENT_URL || '#trophy';
+
   return (
     <section id="top" className="relative overflow-hidden pb-14 pt-28 sm:pt-36 lg:pb-20 lg:pt-40">
       <div
@@ -38,21 +40,23 @@ export default function Hero() {
             </p>
 
             <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <a href="#pricing" className="btn btn-primary justify-between sm:justify-start">
-                {BRAND.primaryCta} — {PLANS.basic.priceLabel}
+              <a href={START_HREF} className="btn btn-primary justify-between sm:justify-start">
+                {BRAND.primaryCta}
                 <span className="btn-nib">
                   <ArrowUpRight />
                 </span>
               </a>
-              <a href="#trophy" className="btn btn-ghost justify-between sm:justify-start">
+              <a
+                href={placementHref}
+                className="btn btn-ghost justify-between sm:justify-start"
+                {...(placementExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+              >
                 {BRAND.secondaryCta}
-                <span className="btn-nib">
-                  <ArrowDown />
-                </span>
+                <span className="btn-nib">{placementExternal ? <ArrowUpRight /> : <ArrowDown />}</span>
               </a>
             </div>
 
-            <p className="mt-5 text-[0.82rem] text-white/38">{BRAND.ctaMicro}</p>
+            <p className="mt-5 text-[0.82rem] text-white/38">{BRAND.trustLine}</p>
           </div>
 
           <div className="hidden lg:col-span-6 lg:block">

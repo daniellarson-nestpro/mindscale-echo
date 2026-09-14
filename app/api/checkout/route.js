@@ -6,7 +6,7 @@ import { appendCheckoutParams, looksLikeEmail, safePreviewToken, safeRelativePat
 import { getApprovalForLead, getLeadForCheckout } from '../../../lib/leads';
 import { hasN8nCompose } from '../../../lib/compose';
 import { APPROVAL_REQUIRED_MESSAGE } from '../../../lib/approval.js';
-import { checkoutGateFor, DRAFT_REQUIRED_MESSAGE } from '../../../lib/funnel-gates.js';
+import { checkoutGateFor, DRAFT_REQUIRED_MESSAGE, START_PATH } from '../../../lib/funnel-gates.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -79,6 +79,12 @@ export async function POST(request) {
     }
   }
   const away = checkoutGateFor({ lead, hasRealDraft, alreadyApproved, token });
+  if (away === START_PATH) {
+    return NextResponse.json(
+      { error: DRAFT_REQUIRED_MESSAGE, code: 'draft_required', redirect: START_PATH },
+      { status: 409 }
+    );
+  }
   if (away === '/brief') {
     return NextResponse.json(
       { error: DRAFT_REQUIRED_MESSAGE, code: 'draft_required', redirect: '/brief' },

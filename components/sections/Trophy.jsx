@@ -1,4 +1,4 @@
-import { TROPHY } from '../../lib/content';
+import { TROPHY, START_HREF, BRAND } from '../../lib/content';
 import { ArrowUpRight } from '../Icons';
 
 /**
@@ -15,8 +15,8 @@ export default function Trophy() {
             <span className="eyebrow eyebrow-dot">{TROPHY.eyebrow}</span>
             <h2 className="mt-6 text-[2.3rem] sm:text-[3rem]">{TROPHY.headline}</h2>
             <p className="mt-5 text-[1rem] leading-relaxed text-white/55">{TROPHY.copy}</p>
-            <a href="#pricing" className="btn btn-ghost mt-8">
-              Launch My Release
+            <a href={START_HREF} className="btn btn-ghost mt-8">
+              {BRAND.primaryCta}
               <span className="btn-nib">
                 <ArrowUpRight />
               </span>
