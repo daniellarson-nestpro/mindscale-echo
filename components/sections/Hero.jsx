@@ -3,7 +3,6 @@ import BroadcastHero from '../BroadcastHero';
 import { ArrowUpRight } from '../Icons';
 
 export default function Hero() {
-
   return (
     <section id="top" className="relative overflow-hidden pb-14 pt-28 sm:pt-36 lg:pb-20 lg:pt-40">
       <div
