@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { PREVIEW, nextSendDay } from '../../lib/draft';
+import { PREVIEW, sendDayLabel } from '../../lib/draft';
 import { BRIEF_EDIT_HREF } from '../../lib/funnel';
 import { ArrowUpRight, ArrowRight, Check, Shield } from '../Icons';
 import ApprovalCheckbox from './ApprovalCheckbox';
@@ -21,7 +21,7 @@ export default function PreviewScreen({
   const router = useRouter();
   const [copied, setCopied] = useState(false);
   const [approved, setApproved] = useState(Boolean(alreadyApproved));
-  const day = nextSendDay();
+  const day = sendDayLabel();
   const canCheckout = !requiresApproval || approved;
 
   async function share() {

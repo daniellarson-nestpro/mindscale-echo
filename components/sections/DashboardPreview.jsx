@@ -53,10 +53,10 @@ export default function DashboardPreview() {
                   </p>
                   <ul className="mt-4 space-y-2.5">
                     {[
-                      ['Business Insider', 'Markets · syndicated'],
-                      ['Yahoo! Finance', 'Company news'],
-                      ['Benzinga', 'Local business'],
-                      ['Apple News', 'Aggregated feed'],
+                      ['AP News', 'Live URL'],
+                      ['Business Insider', 'Live URL'],
+                      ['Yahoo Finance', 'Live URL'],
+                      ['Benzinga', 'Premium'],
                     ].map(([outlet, kind]) => (
                       <li
                         key={outlet}

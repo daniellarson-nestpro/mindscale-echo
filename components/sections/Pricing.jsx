@@ -1,8 +1,11 @@
 import { PLANS } from '../../lib/plans';
-import { BRAND } from '../../lib/content';
-import CheckoutButton from '../CheckoutButton';
-import { Check, Lock } from '../Icons';
+import { PRICING, START_HREF } from '../../lib/content';
+import { Check, Lock, ArrowUpRight } from '../Icons';
 
+/**
+ * Both cards link to /start. Nothing on the homepage opens Stripe: the
+ * customer reads and approves the draft first, then pays on /checkout.
+ */
 export default function Pricing() {
   const plans = [PLANS.basic, PLANS.premium];
 
@@ -18,11 +21,11 @@ export default function Pricing() {
 
       <div className="page-shell relative">
         <header className="reveal mx-auto max-w-2xl text-center">
-          <span className="eyebrow eyebrow-dot">Packages</span>
+          <span className="eyebrow eyebrow-dot">{PRICING.eyebrow}</span>
           <h2 className="mt-6 text-[2.5rem] sm:text-[3.4rem]">
-            Pay per release. <span className="text-gradient-mint">No retainer.</span>
+            {PRICING.headline[0]}{' '}
+            <span className="text-gradient-mint">{PRICING.headline[1]}</span>
           </h2>
-          <p className="mt-5 text-[1rem] leading-relaxed text-white/55">{BRAND.urgency}</p>
         </header>
 
         <div className="mt-14 grid items-start gap-5 lg:grid-cols-2 lg:gap-6">
@@ -31,12 +34,21 @@ export default function Pricing() {
           ))}
         </div>
 
-        <div className="mt-10 flex flex-wrap items-center justify-center gap-x-7 gap-y-3 text-white/38">
-          <span className="flex items-center gap-2 text-[0.8rem]">
-            <Lock width={13} height={13} /> Secure checkout by Stripe
-          </span>
-          <span className="text-[0.8rem]">You approve before distribution</span>
-          <span className="text-[0.8rem]">Draft back within 2 business days</span>
+        <p className="mx-auto mt-10 flex max-w-3xl items-start justify-center gap-2 text-center text-[0.82rem] leading-relaxed text-white/40">
+          <Lock width={13} height={13} className="mt-1 shrink-0" />
+          <span>{PRICING.underCards}</span>
+        </p>
+
+        <div className="reveal mx-auto mt-10 max-w-3xl">
+          <div className="bezel">
+            <div className="bezel-core p-6 sm:p-8">
+              <span className="eyebrow eyebrow-dot">Guarantee</span>
+              <p className="mt-4 text-[1.02rem] leading-relaxed text-white/80">
+                {PRICING.guarantee}
+              </p>
+              <p className="mt-3 text-[0.86rem] leading-relaxed text-white/45">{PRICING.timing}</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -68,7 +80,7 @@ function PlanCard({ plan }) {
                 {plan.tagline}
               </p>
             </div>
-            {featured && <span className="eyebrow shrink-0">Recommended — AI layer</span>}
+            {plan.badge && <span className="eyebrow shrink-0">{plan.badge}</span>}
           </div>
 
           <div className="mt-7 flex items-baseline gap-2">
@@ -118,16 +130,15 @@ function PlanCard({ plan }) {
             ))}
           </ul>
 
-          <CheckoutButton
-            plan={plan.id}
-            label={plan.cta}
-            variant={featured ? 'primary' : 'ghost'}
-            className="mt-9"
-          />
-
-          <p className="mt-4 text-center text-[0.74rem] text-white/32">
-            One-time payment · Distribution network — reported placements vary
-          </p>
+          <a
+            href={START_HREF}
+            className={`btn mt-9 w-full justify-between ${featured ? 'btn-primary' : 'btn-ghost'}`}
+          >
+            {plan.cta}
+            <span className="btn-nib">
+              <ArrowUpRight />
+            </span>
+          </a>
         </div>
       </div>
     </div>

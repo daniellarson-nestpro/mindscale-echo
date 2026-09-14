@@ -8,8 +8,9 @@ const easeOutExpo = (p) => (p >= 1 ? 1 : 1 - Math.pow(2, -10 * p));
  * Counts up once when scrolled into view. Numbers that accumulate read as
  * scale; numbers that sit there read as specs.
  *
- * Renders the final value on the server so the number is correct without JS,
- * then resets to zero on mount to run the count.
+ * The final value is in the HTML and stays in the DOM until the element is
+ * actually on screen: the count only drops to zero the instant it starts, so
+ * no crawler, screenshot, or reader ever sees "0+".
  */
 export default function Odometer({ value, suffix = '', duration = 1100, className = '' }) {
   const ref = useRef(null);
@@ -27,11 +28,10 @@ export default function Odometer({ value, suffix = '', duration = 1100, classNam
       return undefined;
     }
 
-    setDisplay(0);
-
     const run = () => {
       if (done.current) return;
       done.current = true;
+      setDisplay(0);
       const start = performance.now();
       const step = (now) => {
         const p = Math.min((now - start) / duration, 1);

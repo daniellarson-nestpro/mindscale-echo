@@ -1,15 +1,20 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import CheckoutButton from '../CheckoutButton';
 import { PLANS } from '../../lib/plans';
-import { CHECKOUT, nextSendDay } from '../../lib/draft';
+import { CHECKOUT, sendDayLabel } from '../../lib/draft';
 import { looksLikeEmail, safePreviewToken } from '../../lib/url';
 import { Check, Lock, ArrowUpRight } from '../Icons';
 
+/** Build-time: the booker only appears when a real calendar is configured. */
+const CALENDAR_URL = process.env.NEXT_PUBLIC_CALENDAR_URL || '';
+
 /**
- * Mirrors the landing page pricing deliberately — same cards, same language,
- * same CheckoutButton hitting the same POST /api/checkout. No new Stripe UI.
+ * The only place Stripe opens. The landing page links here through /start;
+ * the server gate above this component refuses anyone without an approved
+ * draft. Same cards and language as the landing page pricing.
  *
  * Identity (email + preview token) is passed through so Stripe can stamp it
  * on the session. Summary is the signed-in lead’s company, not DEMO_DRAFT.
@@ -22,7 +27,7 @@ export default function CheckoutScreen({ summary, token: tokenProp, email: email
   const [returning, setReturning] = useState(false);
   const [email, setEmail] = useState(() => looksLikeEmail(emailProp) || '');
   const token = safePreviewToken(tokenProp);
-  const day = nextSendDay();
+  const day = sendDayLabel();
 
   /** Second arrival without a purchase promotes the booker. */
   useEffect(() => {
@@ -81,6 +86,7 @@ export default function CheckoutScreen({ summary, token: tokenProp, email: email
     <>
       <span className="eyebrow eyebrow-dot">{CHECKOUT.eyebrow}</span>
       <h1 className="mt-6 text-[2.1rem] leading-[1.02] sm:text-[2.6rem]">{CHECKOUT.h1}</h1>
+      <p className="mt-4 max-w-xl text-[1rem] leading-relaxed text-white/55">{CHECKOUT.sub}</p>
 
       {summary && (
         <p className="mt-5 font-mono text-[10px] uppercase tracking-eyebrow text-white/38">
@@ -157,7 +163,7 @@ export default function CheckoutScreen({ summary, token: tokenProp, email: email
 
                   <CheckoutButton
                     plan={plan.id}
-                    label={`Send it out — ${plan.priceLabel}`}
+                    label={plan.checkoutCta}
                     variant={featured ? 'primary' : 'ghost'}
                     className="mt-8"
                     next="/account?paid=1"
@@ -165,7 +171,7 @@ export default function CheckoutScreen({ summary, token: tokenProp, email: email
                     email={email || undefined}
                   />
                   <p className="mt-2.5 text-center font-mono text-[10px] uppercase tracking-eyebrow text-white/30">
-                    Goes out {day} morning
+                    Goes out {day}
                   </p>
                 </div>
               </div>
@@ -174,16 +180,26 @@ export default function CheckoutScreen({ summary, token: tokenProp, email: email
         })}
       </div>
 
-      <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-white/38">
-        <span className="flex items-center gap-2 text-[0.8rem]">
-          <Lock width={12} height={12} /> {CHECKOUT.underButtons}
-        </span>
-      </div>
+      <p className="mx-auto mt-8 flex max-w-2xl items-start justify-center gap-2 text-center text-[0.8rem] leading-relaxed text-white/38">
+        <Lock width={12} height={12} className="mt-1 shrink-0" />
+        <span>{CHECKOUT.underButtons}</span>
+      </p>
+      <p className="mt-3 text-center text-[0.78rem] leading-relaxed text-white/38">
+        {CHECKOUT.consent}{' '}
+        <Link href="/terms" className="text-white/60 underline underline-offset-4 hover:text-white">
+          Terms of Service
+        </Link>{' '}
+        and{' '}
+        <Link href="/privacy" className="text-white/60 underline underline-offset-4 hover:text-white">
+          Privacy Policy
+        </Link>
+        .
+      </p>
 
-      <div className="mt-10 rule" />
+      {CALENDAR_URL ? <div className="mt-10 rule" /> : null}
 
-      {/* The booker: quiet by default, promoted on a second visit. Never a popup. */}
-      {returning ? (
+      {/* The booker: only with a real calendar; quiet by default, promoted on a second visit. */}
+      {!CALENDAR_URL ? null : returning ? (
         <div className="mt-8">
           <div className="bezel">
             <div className="bezel-core flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:justify-between sm:p-7">

@@ -1,4 +1,4 @@
-import { STEPS, BRAND } from '../../lib/content';
+import { STEPS, HOW_IT_WORKS } from '../../lib/content';
 
 /**
  * Compressed to a single inline row. A tall four-step ladder frames the
@@ -9,8 +9,8 @@ export default function HowItWorks() {
     <section id="how-it-works" className="relative py-16 md:py-20">
       <div className="page-shell">
         <h2 className="max-w-3xl text-[1.9rem] leading-tight sm:text-[2.5rem]">
-          Send it. We write it. You approve.{' '}
-          <span className="text-gradient-mint">It goes out.</span>
+          {HOW_IT_WORKS.headline[0]}{' '}
+          <span className="text-gradient-mint">{HOW_IT_WORKS.headline[1]}</span>
         </h2>
 
         <ol className="mt-10 grid gap-x-8 gap-y-7 sm:grid-cols-2 lg:grid-cols-4">
@@ -25,7 +25,7 @@ export default function HowItWorks() {
           ))}
         </ol>
 
-        <p className="mt-9 text-[0.85rem] text-white/38">{BRAND.urgency}</p>
+        <p className="mt-9 text-[0.85rem] text-white/38">{HOW_IT_WORKS.note}</p>
       </div>
     </section>
   );

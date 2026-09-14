@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { FOOTER } from '../../lib/content';
 
 /**
  * Funnel chrome: wordmark + step indicator, no navigation. Nav links in a
@@ -52,11 +53,17 @@ export default function FunnelShell({ step, of = 3, width = 'narrow', children }
 
       <footer className={`relative mx-auto ${max} px-5 pt-16 sm:px-8`}>
         <div className="rule" />
-        <p className="mt-6 text-[0.72rem] leading-relaxed text-white/28">
-          Distribution network and eligible placements vary by package, newsworthiness, and
-          editorial discretion. Outlet and platform names identify the distribution network and do
-          not imply endorsement or guaranteed pickup.
-        </p>
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-[0.72rem] leading-relaxed text-white/28">{FOOTER.legal}</p>
+          <nav aria-label="Legal" className="flex items-center gap-5 text-[0.78rem] text-white/38">
+            <Link href="/terms" className="transition-colors duration-500 hover:text-white">
+              Terms
+            </Link>
+            <Link href="/privacy" className="transition-colors duration-500 hover:text-white">
+              Privacy
+            </Link>
+          </nav>
+        </div>
       </footer>
     </div>
   );

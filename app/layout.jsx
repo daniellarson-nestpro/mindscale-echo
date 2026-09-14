@@ -1,14 +1,14 @@
 import './globals.css';
 import ScrollReveal from '../components/ScrollReveal';
+import { META } from '../lib/content';
 
 export const metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'),
-  title: 'Mindscale Echo — AI-Powered Media Distribution for the Human and AI Layers',
-  description:
-    'Turn local coverage into a professionally written press release, distributed across major media channels and, on Premium, AI discovery channels.',
+  title: META.title,
+  description: META.description,
   openGraph: {
-    title: 'Mindscale Echo',
-    description: 'AI-powered media distribution for the human and AI layers.',
+    title: META.ogTitle,
+    description: META.ogDescription,
     type: 'website',
   },
   robots: { index: true, follow: true },
