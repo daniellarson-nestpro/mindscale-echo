@@ -283,7 +283,8 @@
        (Windows "animation effects off" trips this for a lot of people). The strip is
        decorative and pauses on hover, so keep it moving at half speed instead. */
     .marquee-track {
-      animation-duration: 90s;
+      /* !important: the global reduced-motion reset above zeroes every animation. */
+      animation-duration: 90s !important;
     }
   }
 
