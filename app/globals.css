@@ -279,12 +279,11 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    /* "Reduce", not "remove". Collapsing the loop into a wrapped list read as broken
+       (Windows "animation effects off" trips this for a lot of people). The strip is
+       decorative and pauses on hover, so keep it moving at half speed instead. */
     .marquee-track {
-      animation: none;
-      flex-wrap: wrap;
-      width: 100%;
-      gap: 1.5rem 2.5rem;
-      justify-content: center;
+      animation-duration: 90s;
     }
   }
 
